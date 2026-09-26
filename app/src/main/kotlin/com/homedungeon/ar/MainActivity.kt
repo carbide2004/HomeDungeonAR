@@ -22,6 +22,7 @@ import com.google.ar.core.Anchor
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Config
 import com.google.ar.core.Frame
+import com.google.ar.core.InstantPlacementPoint
 import com.google.ar.core.Plane
 import com.google.ar.core.Point
 import com.google.ar.core.Session
@@ -147,6 +148,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                         focusMode = Config.FocusMode.AUTO
                         planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                         lightEstimationMode = Config.LightEstimationMode.AMBIENT_INTENSITY
+                        instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
                     }
                     configure(config)
                 }
@@ -252,8 +254,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             val hitResults = frame.hitTest(tap.x, tap.y)
             for (hit in hitResults) {
                 val trackable = hit.trackable
-                val isValidHit = (trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) ||
-                        (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)
+                val isValidHit = when (trackable) {
+                    is Plane -> trackable.isPoseInPolygon(hit.hitPose) || trackable.isPoseInExtents(hit.hitPose)
+                    is Point -> trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
+                    is InstantPlacementPoint -> true
+                    else -> false
+                }
 
                 if (isValidHit) {
                     val newAnchor = hit.createAnchor()
@@ -290,17 +296,19 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
 
         // 3. Update Diagnostics UI on main thread
-        val planeCount = currentSession.getAllTrackables(Plane::class.java).count { it.trackingState == TrackingState.TRACKING }
+        val allPlanes = currentSession.getAllTrackables(Plane::class.java)
+        val floorCount = allPlanes.count { it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.trackingState == TrackingState.TRACKING }
+        val wallCount = allPlanes.count { it.type == Plane.Type.VERTICAL && it.trackingState == TrackingState.TRACKING }
         val anchorCount = synchronized(anchors) { anchors.size }
         val camPose = camera.pose
 
         runOnUiThread {
             when (trackingState) {
                 TrackingState.TRACKING -> {
-                    binding.tvStatus.text = "空间基准已锁定 (走动时可测试锚点不漂移)"
+                    binding.tvStatus.text = "空间基准已锁定 (支持地面/桌面/墙面锚定)"
                 }
                 TrackingState.PAUSED -> {
-                    binding.tvStatus.text = "正在校准空间基准... (请缓慢平移手机扫描地面)"
+                    binding.tvStatus.text = "正在校准空间基准... (请缓慢平移手机扫描环境)"
                 }
                 TrackingState.STOPPED -> {
                     binding.tvStatus.text = "追踪丢失 (尝试面向光线充足区域)"
@@ -311,7 +319,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 "坐标: X: %+.2fm | Y: %+.2fm | Z: %+.2fm",
                 camPose.tx(), camPose.ty(), camPose.tz()
             )
-            binding.tvInfo.text = "检测平面: $planeCount | 锚点: $anchorCount | 帧率: $currentFps FPS"
+            binding.tvInfo.text = "地面: $floorCount | 墙面: $wallCount | 锚点: $anchorCount | 帧率: $currentFps FPS"
         }
     }
 
