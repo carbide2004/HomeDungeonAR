@@ -35,8 +35,11 @@ import com.google.ar.core.exceptions.UnavailableSdkTooOldException
 import com.homedungeon.ar.databinding.ActivityMainBinding
 import com.homedungeon.ar.rendering.BackgroundRenderer
 import com.homedungeon.ar.rendering.CubeRenderer
+import com.homedungeon.ar.audio.SpatialAudioEngine
+import com.homedungeon.ar.audio.SoundTrackType
 import com.homedungeon.ar.haptics.DetectorHapticDriver
 import com.homedungeon.core.DetectorMath
+import com.homedungeon.core.SpatialAudioMath
 import com.homedungeon.core.Vector3
 import java.util.concurrent.ArrayBlockingQueue
 import javax.microedition.khronos.egl.EGLConfig
@@ -55,6 +58,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private val backgroundRenderer = BackgroundRenderer()
     private val cubeRenderer = CubeRenderer()
     private lateinit var hapticDriver: DetectorHapticDriver
+    private lateinit var audioEngine: SpatialAudioEngine
 
     private var currentK = 2.0f
 
@@ -83,14 +87,16 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         hapticDriver = DetectorHapticDriver(this)
+        audioEngine = SpatialAudioEngine(this)
 
         binding.btnK1.setOnClickListener { setK(1.0f) }
         binding.btnK2.setOnClickListener { setK(2.0f) }
         binding.btnK4.setOnClickListener { setK(4.0f) }
 
-        binding.btnTestVibrate.setOnClickListener {
-            val result = hapticDriver.triggerTestVibration()
-            Toast.makeText(this, result, Toast.LENGTH_SHORT).show()
+        binding.btnToggleAudio.setOnClickListener {
+            val newTrack = audioEngine.toggleTrack()
+            binding.btnToggleAudio.text = "🔊 ${newTrack.displayName}"
+            Toast.makeText(this, "声源切换为: ${newTrack.displayName}", Toast.LENGTH_SHORT).show()
         }
 
         binding.btnGrantPermission.setOnClickListener {
@@ -293,7 +299,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     synchronized(anchors) {
                         anchors.add(newAnchor)
                     }
-                    hapticDriver.triggerOneShotTap()
+                    runOnUiThread {
+                        hapticDriver.triggerOneShotTap(binding.root)
+                    }
                     break
                 }
             }
@@ -333,6 +341,10 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         // Camera forward direction is strictly -zAxis in world space
         val zAxis = camPose.zAxis
         val camFwd = Vector3(-zAxis[0], -zAxis[1], -zAxis[2])
+        val xAxis = camPose.xAxis
+        val camRight = Vector3(xAxis[0], xAxis[1], xAxis[2])
+
+        var spatialAudioResult = com.homedungeon.core.SpatialAudioResult(0f, 0f, -1f, 0f)
 
         synchronized(anchors) {
             for (anchor in anchors) {
@@ -347,23 +359,35 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                         maxIntensity = intensity
                         nearestDistance = dist
                         nearestCosTheta = cos
+
+                        // Compute spatial audio towards this active anchor
+                        spatialAudioResult = SpatialAudioMath.calculateSpatialGain(
+                            camPos, camFwd, camRight, targetPos
+                        )
                     }
                 }
             }
         }
 
-        // Trigger dynamic haptic vibration (only when camera is actively tracking)
-        if (trackingState == TrackingState.TRACKING) {
-            hapticDriver.update(maxIntensity)
+        // Update Spatial Audio Engine
+        if (trackingState == TrackingState.TRACKING && nearestDistance >= 0f) {
+            audioEngine.updateSpatialGain(spatialAudioResult.leftVolume, spatialAudioResult.rightVolume)
+        } else {
+            audioEngine.updateSpatialGain(0f, 0f)
         }
 
-        // 4. Update Diagnostics UI on main thread
+        // 4. Update Diagnostics UI & Haptics on main thread
         val allPlanes = currentSession.getAllTrackables(Plane::class.java)
         val floorCount = allPlanes.count { it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.trackingState == TrackingState.TRACKING }
         val wallCount = allPlanes.count { it.type == Plane.Type.VERTICAL && it.trackingState == TrackingState.TRACKING }
         val anchorCount = synchronized(anchors) { anchors.size }
 
         runOnUiThread {
+            // Trigger dynamic haptic feedback on UI thread via View pipeline
+            if (trackingState == TrackingState.TRACKING) {
+                hapticDriver.update(maxIntensity, binding.root)
+            }
+
             when (trackingState) {
                 TrackingState.TRACKING -> {
                     binding.tvStatus.text = "空间基准已锁定 (支持地面/桌面/墙面锚定)"
@@ -388,8 +412,21 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     "探测: 距离 %.2fm | 对准 %d%% | 强度 I = %.2f (k=%.0f)",
                     nearestDistance, alignPct, maxIntensity, currentK
                 )
+
+                val dirDesc = when {
+                    spatialAudioResult.azimuthDegrees > 30f -> "右偏 %.0f°".format(spatialAudioResult.azimuthDegrees)
+                    spatialAudioResult.azimuthDegrees < -30f -> "左偏 %.0f°".format(-spatialAudioResult.azimuthDegrees)
+                    else -> "正前方"
+                }
+
+                binding.tvSpatialAudio.text = String.format(
+                    "声源: [%s] | 方位: %s | 声道: L %.2f | R %.2f",
+                    audioEngine.currentTrack.displayName, dirDesc,
+                    spatialAudioResult.leftVolume, spatialAudioResult.rightVolume
+                )
             } else {
                 binding.tvDetectorHaptics.text = "探测: 未部署异常源 (点击空间部署锚点)"
+                binding.tvSpatialAudio.text = "声源: [待命中] (点击墙面/地面部署发声锚点)"
             }
         }
     }

@@ -70,6 +70,16 @@
             android:textColor="@color/terminal_green"
             android:textSize="12sp"
             android:textStyle="bold" />
+
+        <!-- Spatial Audio Readout -->
+        <TextView
+            android:id="@+id/tvSpatialAudio"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="声源: [墙内刮擦声] | 方位: -- | 声道: L 0.00 | R 0.00"
+            android:textColor="@color/white"
+            android:textSize="11sp" />
     </LinearLayout>
 
     <!-- Bottom Controls & Parameter Tuning -->
@@ -82,6 +92,7 @@
         android:orientation="vertical"
         android:padding="12dp">
 
+        <!-- Row 1: k selection -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -97,67 +108,72 @@
 
             <Button
                 android:id="@+id/btnK1"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
+                android:layout_width="0dp"
+                android:layout_height="34dp"
                 android:layout_marginStart="4dp"
+                android:layout_weight="1"
                 android:backgroundTint="@color/terminal_dark"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
                 android:text="k=1"
                 android:textColor="@color/terminal_green"
                 android:textSize="11sp" />
 
             <Button
                 android:id="@+id/btnK2"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
+                android:layout_width="0dp"
+                android:layout_height="34dp"
                 android:layout_marginStart="4dp"
+                android:layout_weight="1"
                 android:backgroundTint="@color/terminal_green"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
                 android:text="k=2"
                 android:textColor="@color/black"
                 android:textSize="11sp" />
 
             <Button
                 android:id="@+id/btnK4"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
+                android:layout_width="0dp"
+                android:layout_height="34dp"
                 android:layout_marginStart="4dp"
+                android:layout_weight="1"
                 android:backgroundTint="@color/terminal_dark"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
                 android:text="k=4"
                 android:textColor="@color/terminal_green"
                 android:textSize="11sp" />
+        </LinearLayout>
 
-            <View
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
+        <!-- Row 2: Action buttons -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
             <Button
-                android:id="@+id/btnTestVibrate"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
+                android:id="@+id/btnToggleAudio"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
                 android:layout_marginEnd="6dp"
-                android:backgroundTint="@color/terminal_border"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
-                android:text="测试震动"
+                android:layout_weight="1"
+                android:backgroundTint="@color/terminal_dark"
+                android:text="🔊 切换空间声源"
                 android:textColor="@color/terminal_green"
                 android:textSize="11sp" />
 
             <Button
                 android:id="@+id/btnClearAnchors"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:backgroundTint="@color/terminal_green"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_weight="1"
+                android:backgroundTint="@color/terminal_dark"
                 android:text="清除锚点"
-                android:textColor="@color/black"
-                android:textSize="11sp" />
+                android:textColor="@color/terminal_green"
+                android:textSize="12sp" />
         </LinearLayout>
 
         <TextView
