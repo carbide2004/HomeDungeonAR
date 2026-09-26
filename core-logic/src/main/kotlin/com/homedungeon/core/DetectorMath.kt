@@ -15,6 +15,10 @@ data class Vector3(val x: Float, val y: Float, val z: Float) {
     fun dot(other: Vector3): Float = x * other.x + y * other.y + z * other.z
 
     operator fun minus(other: Vector3): Vector3 = Vector3(x - other.x, y - other.y, z - other.z)
+
+    operator fun plus(other: Vector3): Vector3 = Vector3(x + other.x, y + other.y, z + other.z)
+
+    operator fun times(scalar: Float): Vector3 = Vector3(x * scalar, y * scalar, z * scalar)
 }
 
 object DetectorMath {

@@ -32,15 +32,18 @@ import com.google.ar.core.exceptions.UnavailableApkTooOldException
 import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException
 import com.google.ar.core.exceptions.UnavailableDeviceNotCompatibleException
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException
-import com.homedungeon.ar.databinding.ActivityMainBinding
-import com.homedungeon.ar.rendering.BackgroundRenderer
-import com.homedungeon.ar.rendering.CubeRenderer
 import com.homedungeon.ar.audio.SpatialAudioEngine
 import com.homedungeon.ar.audio.SoundTrackType
+import com.homedungeon.ar.databinding.ActivityMainBinding
 import com.homedungeon.ar.haptics.DetectorHapticDriver
+import com.homedungeon.ar.rendering.BackgroundRenderer
+import com.homedungeon.ar.rendering.CubeRenderer
+import com.homedungeon.ar.rendering.WallDecalRenderer
+import com.homedungeon.core.AnomalyStage
 import com.homedungeon.core.DetectorMath
 import com.homedungeon.core.SpatialAudioMath
 import com.homedungeon.core.Vector3
+import com.homedungeon.core.WallAnomalyStateMachine
 import java.util.concurrent.ArrayBlockingQueue
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -57,6 +60,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private val backgroundRenderer = BackgroundRenderer()
     private val cubeRenderer = CubeRenderer()
+    private val wallDecalRenderer = WallDecalRenderer()
+    private val anomalyStateMachine = WallAnomalyStateMachine()
     private lateinit var hapticDriver: DetectorHapticDriver
     private lateinit var audioEngine: SpatialAudioEngine
 
@@ -64,6 +69,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var terminalFilterEnabled = true
     private var viewportWidth = 1080
     private var viewportHeight = 2400
+    private var lastFrameTimestamp = System.currentTimeMillis()
+    private var hasTriggeredRevealHaptic = false
 
     private val anchors = ArrayList<Anchor>()
     private val queuedSingleTaps = ArrayBlockingQueue<MotionEvent>(16)
@@ -128,6 +135,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 }
                 anchors.clear()
             }
+            anomalyStateMachine.reset()
+            hasTriggeredRevealHaptic = false
             runOnUiThread {
                 binding.tvInfo.text = "平面: -- | 锚点: 0 | 帧率: $currentFps FPS"
                 Toast.makeText(this, "所有空间锚点已清除", Toast.LENGTH_SHORT).show()
@@ -259,6 +268,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         GLES20.glClearColor(0.0f, 0.0f, 0.0f, 1.0f)
         backgroundRenderer.createOnGlThread()
         cubeRenderer.createOnGlThread()
+        wallDecalRenderer.createOnGlThread()
         session?.setCameraTextureName(backgroundRenderer.textureId)
     }
 
@@ -316,6 +326,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     synchronized(anchors) {
                         anchors.add(newAnchor)
                     }
+                    anomalyStateMachine.onAnchorPlaced()
+                    hasTriggeredRevealHaptic = false
                     runOnUiThread {
                         hapticDriver.triggerOneShotTap(binding.root)
                     }
@@ -338,6 +350,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
         var spatialAudioResult = com.homedungeon.core.SpatialAudioResult(0f, 0f, -1f, 0f)
 
+        // 状态机更新时间步长
+        val nowMs = System.currentTimeMillis()
+        val deltaSeconds = (nowMs - lastFrameTimestamp).coerceIn(1L, 200L) / 1000.0f
+        lastFrameTimestamp = nowMs
+
         synchronized(anchors) {
             for (anchor in anchors) {
                 if (anchor.trackingState != TrackingState.STOPPED) {
@@ -351,8 +368,28 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                         nearestDistance = dist
                         nearestCosTheta = cos
 
+                        // 判断是否正对目标墙面 (视场角 30° 锥体内, cos >= 0.866)
+                        val isLookingAtWall = (cos >= 0.866f && dist > 0f)
+                        anomalyStateMachine.update(isLookingAtWall, deltaSeconds)
+
+                        // 阶段 2 (转开视线): 声音在耳机里向右后方墙根爬行位移，诱导并恐吓玩家！
+                        val audioTargetPos = if (anomalyStateMachine.currentStage == AnomalyStage.PHASE2_LOOKING_AWAY) {
+                            val crawlProgress = (anomalyStateMachine.lookAwayDuration / 2.0f).coerceIn(0f, 1f)
+                            targetPos - (camRight * (crawlProgress * 2.2f))
+                        } else {
+                            targetPos
+                        }
+
+                        // 阶段 3 (转回头直视反转): 触发一次惊吓性强顿挫触觉脉冲
+                        if (anomalyStateMachine.currentStage == AnomalyStage.PHASE3_FACE_REVEAL && !hasTriggeredRevealHaptic) {
+                            hasTriggeredRevealHaptic = true
+                            runOnUiThread {
+                                hapticDriver.triggerOneShotTap(binding.root)
+                            }
+                        }
+
                         spatialAudioResult = SpatialAudioMath.calculateSpatialGain(
-                            camPos, camFwd, camRight, targetPos
+                            camPos, camFwd, camRight, audioTargetPos
                         )
                     }
                 }
@@ -372,7 +409,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         camera.getProjectionMatrix(projMatrix, 0, 0.05f, 100.0f)
         camera.getViewMatrix(viewMatrix, 0)
 
-        // 2. Render Placed 3D Anchors
+        // 2. Render Placed 3D Anchors & Wall Decals
         if (trackingState == TrackingState.TRACKING) {
             synchronized(anchors) {
                 val anchorIterator = anchors.iterator()
@@ -381,7 +418,20 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     if (anchor.trackingState == TrackingState.TRACKING) {
                         val modelMatrix = FloatArray(16)
                         anchor.pose.toMatrix(modelMatrix, 0)
-                        cubeRenderer.draw(modelMatrix, viewMatrix, projMatrix)
+
+                        // 绘制贴墙怪谈黄色墙纸 (根据状态机控制淡入度与人脸异变因子)
+                        wallDecalRenderer.draw(
+                            modelMatrix = modelMatrix,
+                            viewMatrix = viewMatrix,
+                            projMatrix = projMatrix,
+                            alpha = anomalyStateMachine.surfaceAlpha,
+                            revealFactor = anomalyStateMachine.revealFactor
+                        )
+
+                        // 仅在墙纸未完全显现时保留线框基准
+                        if (anomalyStateMachine.surfaceAlpha < 0.9f) {
+                            cubeRenderer.draw(modelMatrix, viewMatrix, projMatrix)
+                        }
                     } else if (anchor.trackingState == TrackingState.STOPPED) {
                         anchorIterator.remove()
                     }
@@ -408,16 +458,20 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 hapticDriver.update(maxIntensity, binding.root)
             }
 
-            when (trackingState) {
-                TrackingState.TRACKING -> {
-                    binding.tvStatus.text = "空间基准已锁定 (支持地面/桌面/墙面锚定)"
+            if (trackingState == TrackingState.TRACKING) {
+                val stagePrompt = when (anomalyStateMachine.currentStage) {
+                    AnomalyStage.IDLE -> "轻触墙面部署 [S4 空白墙] 异常点"
+                    AnomalyStage.CALIBRATED_SEARCHING -> "已标定：请将镜头对准该墙面开始观测..."
+                    AnomalyStage.PHASE1_VINES_FADING_IN -> "墙纸正在渗出... 请保持注视"
+                    AnomalyStage.PHASE1_STABLE -> "听！墙根异响正移向右后方... 转开视线寻找声源"
+                    AnomalyStage.PHASE2_LOOKING_AWAY -> "声音已移至你背后... (墙体正在暗中畸变)"
+                    AnomalyStage.PHASE3_FACE_REVEAL -> "【高危】它们全部转过脸来了！“到墙里来”！"
                 }
-                TrackingState.PAUSED -> {
-                    binding.tvStatus.text = "正在校准空间基准... (请缓慢平移手机扫描环境)"
-                }
-                TrackingState.STOPPED -> {
-                    binding.tvStatus.text = "追踪丢失 (尝试面向光线充足区域)"
-                }
+                binding.tvStatus.text = stagePrompt
+            } else if (trackingState == TrackingState.PAUSED) {
+                binding.tvStatus.text = "正在校准空间基准... (请缓慢平移手机扫描环境)"
+            } else {
+                binding.tvStatus.text = "追踪丢失 (尝试面向光线充足区域)"
             }
 
             binding.tvPose.text = String.format(
