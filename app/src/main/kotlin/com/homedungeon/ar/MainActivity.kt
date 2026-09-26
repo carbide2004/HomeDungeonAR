@@ -330,18 +330,19 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             }
         }
 
-        // 3. Calculate Haptic Detector feedback based on nearest anchor
+        // 3. Calculate Haptic Detector & Spatial Audio feedback based on nearest anchor
         var maxIntensity = 0.0f
         var nearestDistance = -1.0f
         var nearestCosTheta = -1.0f
 
-        val camPose = camera.pose
-        val camPos = Vector3(camPose.tx(), camPose.ty(), camPose.tz())
-        // ARCore provides the camera pose zAxis directly (which points out of the screen towards the user)
-        // Camera forward direction is strictly -zAxis in world space
-        val zAxis = camPose.zAxis
+        // 关键修复：必须使用 displayOrientedPose！
+        // 手机竖屏时，底层物理相机 Sensor 是横向 (旋转了 90°)。camera.pose 的 xAxis 实际指向屏幕纵向，
+        // 只有 displayOrientedPose 的 xAxis 才是真实屏幕的水平右手向，-zAxis 才是屏幕前方。
+        val dispPose = camera.displayOrientedPose
+        val camPos = Vector3(dispPose.tx(), dispPose.ty(), dispPose.tz())
+        val zAxis = dispPose.zAxis
         val camFwd = Vector3(-zAxis[0], -zAxis[1], -zAxis[2])
-        val xAxis = camPose.xAxis
+        val xAxis = dispPose.xAxis
         val camRight = Vector3(xAxis[0], xAxis[1], xAxis[2])
 
         var spatialAudioResult = com.homedungeon.core.SpatialAudioResult(0f, 0f, -1f, 0f)
@@ -402,7 +403,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
             binding.tvPose.text = String.format(
                 "坐标: X: %+.2fm | Y: %+.2fm | Z: %+.2fm",
-                camPose.tx(), camPose.ty(), camPose.tz()
+                dispPose.tx(), dispPose.ty(), dispPose.tz()
             )
             binding.tvInfo.text = "地面: $floorCount | 墙面: $wallCount | 锚点: $anchorCount | 帧率: $currentFps FPS"
 
