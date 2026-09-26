@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">家即副本</string>
+    <string name="camera_permission_required">终端需要相机权限以观测空间</string>
+    <string name="grant_permission">授权</string>
+    <string name="status_calibrating">终端状态：正在校准现实坐标...</string>
+    <string name="status_ready">终端状态：坐标已锁定 (M0 相机链路正常)</string>
+</resources>
