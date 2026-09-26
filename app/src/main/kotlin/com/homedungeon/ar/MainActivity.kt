@@ -8,6 +8,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
@@ -64,12 +65,32 @@ class MainActivity : AppCompatActivity() {
                 it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
             }
 
+            val imageAnalysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+
+            var frameCount = 0
+            var lastFpsTimestamp = System.currentTimeMillis()
+
+            imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(this)) { imageProxy ->
+                frameCount++
+                val now = System.currentTimeMillis()
+                val delta = now - lastFpsTimestamp
+                if (delta >= 1000) {
+                    val fps = (frameCount * 1000.0 / delta).toInt()
+                    binding.tvFps.text = "帧率: $fps FPS | 采集: ${imageProxy.width}x${imageProxy.height} | vivo S30"
+                    frameCount = 0
+                    lastFpsTimestamp = now
+                }
+                imageProxy.close()
+            }
+
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
             try {
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(
-                    this, cameraSelector, preview
+                    this, cameraSelector, preview, imageAnalysis
                 )
                 binding.tvStatus.text = getString(R.string.status_ready)
             } catch (exc: Exception) {
