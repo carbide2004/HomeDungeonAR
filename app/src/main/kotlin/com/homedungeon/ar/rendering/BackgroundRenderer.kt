@@ -14,6 +14,10 @@ class BackgroundRenderer {
     private var positionAttrib = 0
     private var texCoordAttrib = 0
     private var textureUniform = 0
+    private var uTimeUniform = 0
+    private var uIntensityUniform = 0
+    private var uFilterModeUniform = 0
+    private var uResolutionUniform = 0
 
     var textureId = -1
         private set
@@ -66,8 +70,64 @@ class BackgroundRenderer {
             precision mediump float;
             varying vec2 v_TexCoord;
             uniform samplerExternalOES u_Texture;
+            uniform float u_Time;
+            uniform float u_Intensity;
+            uniform int u_FilterMode;
+            uniform vec2 u_Resolution;
+
+            // 伪随机生成高频噪点
+            float rand(vec2 co) {
+                return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
+            }
+
             void main() {
-                gl_FragColor = texture2D(u_Texture, v_TexCoord);
+                if (u_FilterMode == 0) {
+                    // 直通模式
+                    gl_FragColor = texture2D(u_Texture, v_TexCoord);
+                    return;
+                }
+
+                vec2 uv = v_TexCoord;
+                vec2 center = vec2(0.5, 0.5);
+                float distFromCenter = length(uv - center);
+
+                // 1. 异常辐射色散 (Chromatic Aberration) - 越靠近异常，边缘色散越明显
+                float chromAberr = 0.003 + u_Intensity * 0.015 * distFromCenter;
+                vec2 redOffset = (uv - center) * chromAberr;
+                vec2 blueOffset = -(uv - center) * chromAberr;
+
+                float r = texture2D(u_Texture, uv + redOffset).r;
+                float g = texture2D(u_Texture, uv).g;
+                float b = texture2D(u_Texture, uv + blueOffset).b;
+                vec3 col = vec3(r, g, b);
+
+                // 2. 终端冷峻调色 (冷调青灰 / 墨绿阴影)
+                float gray = dot(col, vec3(0.299, 0.587, 0.114));
+                vec3 darkTint = vec3(0.06, 0.13, 0.09); // 墨绿暗部
+                vec3 brightTint = vec3(0.85, 0.96, 0.89); // 冷青亮部
+                vec3 graded = mix(darkTint, brightTint, gray);
+                col = mix(col, graded, 0.42); // 混合 42% 终端色调，保留房间轮廓同时营造阴森感
+
+                // 3. 动态高感光电子噪点 (Grain)
+                float noise = (rand(uv + vec2(u_Time * 0.07, u_Time * 0.13)) - 0.5);
+                float noiseAmp = 0.05 + u_Intensity * 0.09;
+                col += vec3(noise * noiseAmp);
+
+                // 4. 监视器微弱扫描线 (Scanlines)
+                float scanline = sin(uv.y * 700.0) * 0.025;
+                col -= vec3(scanline);
+
+                // 5. 光学暗角 (Vignette)
+                float vignette = smoothstep(0.80, 0.28, distFromCenter);
+                col *= (vignette * 0.85 + 0.15);
+
+                // 6. 异常靠近时的信号闪烁撕裂微震 (Glitch on high intensity)
+                if (u_Intensity > 0.6) {
+                    float glitchBar = step(0.98, sin(uv.y * 30.0 + u_Time * 15.0));
+                    col += vec3(glitchBar * 0.12);
+                }
+
+                gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
             }
         """.trimIndent()
 
@@ -83,9 +143,21 @@ class BackgroundRenderer {
         positionAttrib = GLES20.glGetAttribLocation(program, "a_Position")
         texCoordAttrib = GLES20.glGetAttribLocation(program, "a_TexCoord")
         textureUniform = GLES20.glGetUniformLocation(program, "u_Texture")
+
+        uTimeUniform = GLES20.glGetUniformLocation(program, "u_Time")
+        uIntensityUniform = GLES20.glGetUniformLocation(program, "u_Intensity")
+        uFilterModeUniform = GLES20.glGetUniformLocation(program, "u_FilterMode")
+        uResolutionUniform = GLES20.glGetUniformLocation(program, "u_Resolution")
     }
 
-    fun draw(frame: Frame) {
+    fun draw(
+        frame: Frame,
+        timeSeconds: Float = 0f,
+        intensity: Float = 0f,
+        filterEnabled: Boolean = true,
+        viewportWidth: Int = 1080,
+        viewportHeight: Int = 2400
+    ) {
         if (frame.hasDisplayGeometryChanged()) {
             frame.transformCoordinates2d(
                 Coordinates2d.OPENGL_NORMALIZED_DEVICE_COORDINATES,
@@ -107,6 +179,12 @@ class BackgroundRenderer {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
         GLES20.glUniform1i(textureUniform, 0)
+
+        // Set Post-processing uniforms
+        GLES20.glUniform1f(uTimeUniform, timeSeconds)
+        GLES20.glUniform1f(uIntensityUniform, intensity)
+        GLES20.glUniform1i(uFilterModeUniform, if (filterEnabled) 1 else 0)
+        GLES20.glUniform2f(uResolutionUniform, viewportWidth.toFloat(), viewportHeight.toFloat())
 
         quadCoordsBuffer.position(0)
         GLES20.glVertexAttribPointer(positionAttrib, 2, GLES20.GL_FLOAT, false, 0, quadCoordsBuffer)

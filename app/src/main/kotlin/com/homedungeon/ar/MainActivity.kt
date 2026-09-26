@@ -61,6 +61,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private lateinit var audioEngine: SpatialAudioEngine
 
     private var currentK = 2.0f
+    private var terminalFilterEnabled = true
+    private var viewportWidth = 1080
+    private var viewportHeight = 2400
 
     private val anchors = ArrayList<Anchor>()
     private val queuedSingleTaps = ArrayBlockingQueue<MotionEvent>(16)
@@ -92,6 +95,21 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         binding.btnK1.setOnClickListener { setK(1.0f) }
         binding.btnK2.setOnClickListener { setK(2.0f) }
         binding.btnK4.setOnClickListener { setK(4.0f) }
+
+        binding.btnToggleFilter.setOnClickListener {
+            terminalFilterEnabled = !terminalFilterEnabled
+            if (terminalFilterEnabled) {
+                binding.btnToggleFilter.text = "滤镜: 里侧终端"
+                binding.btnToggleFilter.backgroundTintList = ContextCompat.getColorStateList(this, R.color.terminal_green)
+                binding.btnToggleFilter.setTextColor(ContextCompat.getColor(this, R.color.black))
+                Toast.makeText(this, "终端里侧滤镜已激活", Toast.LENGTH_SHORT).show()
+            } else {
+                binding.btnToggleFilter.text = "滤镜: 原始直通"
+                binding.btnToggleFilter.backgroundTintList = ContextCompat.getColorStateList(this, R.color.terminal_dark)
+                binding.btnToggleFilter.setTextColor(ContextCompat.getColor(this, R.color.terminal_green))
+                Toast.makeText(this, "已切换为现实相机直通模式", Toast.LENGTH_SHORT).show()
+            }
+        }
 
         binding.btnToggleAudio.setOnClickListener {
             val newTrack = audioEngine.toggleTrack()
@@ -247,6 +265,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES20.glViewport(0, 0, width, height)
         session?.setDisplayGeometry(display?.rotation ?: 0, width, height)
+        viewportWidth = width
+        viewportHeight = height
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -264,9 +284,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             Log.e(TAG, "Exception updating AR frame", t)
             return
         }
-
-        // 1. Draw camera feed background
-        backgroundRenderer.draw(frame)
 
         val camera = frame.camera
         val trackingState = camera.trackingState
@@ -307,6 +324,52 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             }
         }
 
+        // 3. Calculate Haptic Detector & Spatial Audio feedback based on nearest anchor
+        var maxIntensity = 0.0f
+        var nearestDistance = -1.0f
+        var nearestCosTheta = -1.0f
+
+        val dispPose = camera.displayOrientedPose
+        val camPos = Vector3(dispPose.tx(), dispPose.ty(), dispPose.tz())
+        val zAxis = dispPose.zAxis
+        val camFwd = Vector3(-zAxis[0], -zAxis[1], -zAxis[2])
+        val xAxis = dispPose.xAxis
+        val camRight = Vector3(xAxis[0], xAxis[1], xAxis[2])
+
+        var spatialAudioResult = com.homedungeon.core.SpatialAudioResult(0f, 0f, -1f, 0f)
+
+        synchronized(anchors) {
+            for (anchor in anchors) {
+                if (anchor.trackingState != TrackingState.STOPPED) {
+                    val anchorPose = anchor.pose
+                    val targetPos = Vector3(anchorPose.tx(), anchorPose.ty(), anchorPose.tz())
+                    val (intensity, dist, cos) = DetectorMath.calculateIntensity(
+                        camPos, camFwd, targetPos, k = currentK
+                    )
+                    if (intensity > maxIntensity || nearestDistance < 0f) {
+                        maxIntensity = intensity
+                        nearestDistance = dist
+                        nearestCosTheta = cos
+
+                        spatialAudioResult = SpatialAudioMath.calculateSpatialGain(
+                            camPos, camFwd, camRight, targetPos
+                        )
+                    }
+                }
+            }
+        }
+
+        // 1. Draw camera feed background with Terminal Vision Shader
+        val timeSeconds = (System.currentTimeMillis() % 10000000L) / 1000.0f
+        backgroundRenderer.draw(
+            frame = frame,
+            timeSeconds = timeSeconds,
+            intensity = maxIntensity,
+            filterEnabled = terminalFilterEnabled,
+            viewportWidth = viewportWidth,
+            viewportHeight = viewportHeight
+        )
+
         // Matrices
         val projMatrix = FloatArray(16)
         val viewMatrix = FloatArray(16)
@@ -325,46 +388,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                         cubeRenderer.draw(modelMatrix, viewMatrix, projMatrix)
                     } else if (anchor.trackingState == TrackingState.STOPPED) {
                         anchorIterator.remove()
-                    }
-                }
-            }
-        }
-
-        // 3. Calculate Haptic Detector & Spatial Audio feedback based on nearest anchor
-        var maxIntensity = 0.0f
-        var nearestDistance = -1.0f
-        var nearestCosTheta = -1.0f
-
-        // 关键修复：必须使用 displayOrientedPose！
-        // 手机竖屏时，底层物理相机 Sensor 是横向 (旋转了 90°)。camera.pose 的 xAxis 实际指向屏幕纵向，
-        // 只有 displayOrientedPose 的 xAxis 才是真实屏幕的水平右手向，-zAxis 才是屏幕前方。
-        val dispPose = camera.displayOrientedPose
-        val camPos = Vector3(dispPose.tx(), dispPose.ty(), dispPose.tz())
-        val zAxis = dispPose.zAxis
-        val camFwd = Vector3(-zAxis[0], -zAxis[1], -zAxis[2])
-        val xAxis = dispPose.xAxis
-        val camRight = Vector3(xAxis[0], xAxis[1], xAxis[2])
-
-        var spatialAudioResult = com.homedungeon.core.SpatialAudioResult(0f, 0f, -1f, 0f)
-
-        synchronized(anchors) {
-            for (anchor in anchors) {
-                // As long as the anchor is not completely stopped/trashed, calculate its target guidance
-                if (anchor.trackingState != TrackingState.STOPPED) {
-                    val anchorPose = anchor.pose
-                    val targetPos = Vector3(anchorPose.tx(), anchorPose.ty(), anchorPose.tz())
-                    val (intensity, dist, cos) = DetectorMath.calculateIntensity(
-                        camPos, camFwd, targetPos, k = currentK
-                    )
-                    if (intensity > maxIntensity || nearestDistance < 0f) {
-                        maxIntensity = intensity
-                        nearestDistance = dist
-                        nearestCosTheta = cos
-
-                        // Compute spatial audio towards this active anchor
-                        spatialAudioResult = SpatialAudioMath.calculateSpatialGain(
-                            camPos, camFwd, camRight, targetPos
-                        )
                     }
                 }
             }

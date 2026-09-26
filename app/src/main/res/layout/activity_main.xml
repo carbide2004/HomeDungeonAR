@@ -155,13 +155,28 @@
             android:orientation="horizontal">
 
             <Button
+                android:id="@+id/btnToggleFilter"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginEnd="4dp"
+                android:layout_weight="1"
+                android:backgroundTint="@color/terminal_green"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
+                android:text="滤镜: 里侧终端"
+                android:textColor="@color/black"
+                android:textSize="11sp" />
+
+            <Button
                 android:id="@+id/btnToggleAudio"
                 android:layout_width="0dp"
                 android:layout_height="36dp"
-                android:layout_marginEnd="6dp"
+                android:layout_marginEnd="4dp"
                 android:layout_weight="1"
                 android:backgroundTint="@color/terminal_dark"
-                android:text="🔊 切换空间声源"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
+                android:text="🔊 切换声源"
                 android:textColor="@color/terminal_green"
                 android:textSize="11sp" />
 
@@ -169,11 +184,13 @@
                 android:id="@+id/btnClearAnchors"
                 android:layout_width="0dp"
                 android:layout_height="36dp"
-                android:layout_weight="1"
+                android:layout_weight="0.8"
                 android:backgroundTint="@color/terminal_dark"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
                 android:text="清除锚点"
                 android:textColor="@color/terminal_green"
-                android:textSize="12sp" />
+                android:textSize="11sp" />
         </LinearLayout>
 
         <TextView
