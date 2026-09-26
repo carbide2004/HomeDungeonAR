@@ -362,7 +362,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         // 1. Draw camera feed background with Terminal Vision Shader
         backgroundRenderer.draw(
             frame = frame,
-            frameIndex = (frameCount % 1000).toFloat(),
             intensity = maxIntensity,
             filterEnabled = terminalFilterEnabled
         )

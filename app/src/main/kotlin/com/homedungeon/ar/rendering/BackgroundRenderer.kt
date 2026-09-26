@@ -14,7 +14,6 @@ class BackgroundRenderer {
     private var positionAttrib = 0
     private var texCoordAttrib = 0
     private var textureUniform = 0
-    private var uFrameUniform = 0
     private var uIntensityUniform = 0
     private var uFilterModeUniform = 0
 
@@ -69,17 +68,8 @@ class BackgroundRenderer {
             precision highp float;
             varying vec2 v_TexCoord;
             uniform samplerExternalOES u_Texture;
-            uniform float u_Frame;
             uniform float u_Intensity;
             uniform int u_FilterMode;
-
-            // 行业标准 Interleaved Gradient Noise (IGN - 由 Jorge Jimenez 提出，广泛用于 3A 主机与移动端)
-            // 绝无浮点溢出，逐物理像素点高频采样，噪点颗粒感极强且平稳
-            float ign(vec2 pixelPos, float frame) {
-                vec2 p = pixelPos + vec2(frame * 5.588238, frame * 3.141592);
-                float f = 0.06711056 * p.x + 0.00583715 * p.y;
-                return fract(52.9829189 * fract(f));
-            }
 
             void main() {
                 if (u_FilterMode == 0) {
@@ -91,8 +81,8 @@ class BackgroundRenderer {
                 vec2 center = vec2(0.5, 0.5);
                 float distFromCenter = length(uv - center);
 
-                // 1. 异常辐射色散 (Chromatic Aberration) - 靠近异常时红蓝色散加剧
-                float chromMagnitude = 0.006 + (u_Intensity * u_Intensity * 0.070) * (distFromCenter + 0.35);
+                // 1. 异常辐射红蓝色散 (Chromatic Aberration) - 靠近异常时边缘真实物体轮廓红蓝分裂
+                float chromMagnitude = 0.006 + (u_Intensity * u_Intensity * 0.075) * (distFromCenter + 0.35);
                 vec2 redOffset = (uv - center) * chromMagnitude;
                 vec2 blueOffset = -(uv - center) * chromMagnitude;
 
@@ -101,24 +91,18 @@ class BackgroundRenderer {
                 float b = texture2D(u_Texture, uv + blueOffset).b;
                 vec3 col = vec3(r, g, b);
 
-                // 2. 终端冷色分级调色 (Terminal Color Grading)
+                // 2. 终端冷色分级调色 (Terminal Color Grading - 冷灰青/墨绿阴影)
                 float gray = dot(col, vec3(0.299, 0.587, 0.114));
                 vec3 darkTint = vec3(0.04, 0.14, 0.08); // 墨绿暗部
                 vec3 brightTint = vec3(0.82, 0.96, 0.88); // 冷青高光
                 vec3 graded = mix(darkTint, brightTint, gray);
                 col = mix(col, graded, 0.44);
 
-                // 3. 像素级高频电磁雪花噪波 (基于屏幕硬件实际物理像素坐标 gl_FragCoord.xy)
-                // 基础噪点 10%，逼近异常时暴增至 35% 强噪波
-                float rawNoise = ign(gl_FragCoord.xy, u_Frame) - 0.5;
-                float noiseStrength = 0.10 + (u_Intensity * 0.25);
-                col += vec3(rawNoise * noiseStrength);
-
-                // 4. 监视器扫描线 (Scanlines)
-                float scanline = sin(uv.y * 650.0) * (0.025 + u_Intensity * 0.025);
+                // 3. 极细微监视器扫描线 (Subtle CRT Scanlines)
+                float scanline = sin(uv.y * 700.0) * (0.02 + u_Intensity * 0.02);
                 col -= vec3(scanline);
 
-                // 5. 暗角向内收缩 (Vignette Suffocation) - 靠近异常时暗圈内聚压迫
+                // 4. 空间压迫暗角向内侵蚀 (Vignette Suffocation) - 靠近异常时视野向中心收缩
                 float outerRadius = mix(0.82, 0.52, u_Intensity);
                 float innerRadius = mix(0.32, 0.12, u_Intensity);
                 float vignette = smoothstep(outerRadius, innerRadius, distFromCenter);
@@ -141,14 +125,12 @@ class BackgroundRenderer {
         texCoordAttrib = GLES20.glGetAttribLocation(program, "a_TexCoord")
         textureUniform = GLES20.glGetUniformLocation(program, "u_Texture")
 
-        uFrameUniform = GLES20.glGetUniformLocation(program, "u_Frame")
         uIntensityUniform = GLES20.glGetUniformLocation(program, "u_Intensity")
         uFilterModeUniform = GLES20.glGetUniformLocation(program, "u_FilterMode")
     }
 
     fun draw(
         frame: Frame,
-        frameIndex: Float = 0f,
         intensity: Float = 0f,
         filterEnabled: Boolean = true
     ) {
@@ -175,7 +157,6 @@ class BackgroundRenderer {
         GLES20.glUniform1i(textureUniform, 0)
 
         // Set uniforms
-        GLES20.glUniform1f(uFrameUniform, frameIndex)
         GLES20.glUniform1f(uIntensityUniform, intensity)
         GLES20.glUniform1i(uFilterModeUniform, if (filterEnabled) 1 else 0)
 
