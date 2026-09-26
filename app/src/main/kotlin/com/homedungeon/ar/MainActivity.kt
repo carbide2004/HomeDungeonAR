@@ -88,6 +88,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         binding.btnK2.setOnClickListener { setK(2.0f) }
         binding.btnK4.setOnClickListener { setK(4.0f) }
 
+        binding.btnTestVibrate.setOnClickListener {
+            val result = hapticDriver.triggerTestVibration()
+            Toast.makeText(this, result, Toast.LENGTH_SHORT).show()
+        }
+
         binding.btnGrantPermission.setOnClickListener {
             requestCameraPermission()
         }
@@ -324,30 +329,33 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
         val camPose = camera.pose
         val camPos = Vector3(camPose.tx(), camPose.ty(), camPose.tz())
-        // In ARCore camera view matrix: row 2 / -Z gives the camera forward vector in world coordinates
-        val camFwd = Vector3(-viewMatrix[2], -viewMatrix[6], -viewMatrix[10])
+        // ARCore provides the camera pose zAxis directly (which points out of the screen towards the user)
+        // Camera forward direction is strictly -zAxis in world space
+        val zAxis = camPose.zAxis
+        val camFwd = Vector3(-zAxis[0], -zAxis[1], -zAxis[2])
 
-        if (trackingState == TrackingState.TRACKING) {
-            synchronized(anchors) {
-                for (anchor in anchors) {
-                    if (anchor.trackingState == TrackingState.TRACKING) {
-                        val anchorPose = anchor.pose
-                        val targetPos = Vector3(anchorPose.tx(), anchorPose.ty(), anchorPose.tz())
-                        val (intensity, dist, cos) = DetectorMath.calculateIntensity(
-                            camPos, camFwd, targetPos, k = currentK
-                        )
-                        if (intensity > maxIntensity) {
-                            maxIntensity = intensity
-                            nearestDistance = dist
-                            nearestCosTheta = cos
-                        }
+        synchronized(anchors) {
+            for (anchor in anchors) {
+                // As long as the anchor is not completely stopped/trashed, calculate its target guidance
+                if (anchor.trackingState != TrackingState.STOPPED) {
+                    val anchorPose = anchor.pose
+                    val targetPos = Vector3(anchorPose.tx(), anchorPose.ty(), anchorPose.tz())
+                    val (intensity, dist, cos) = DetectorMath.calculateIntensity(
+                        camPos, camFwd, targetPos, k = currentK
+                    )
+                    if (intensity > maxIntensity || nearestDistance < 0f) {
+                        maxIntensity = intensity
+                        nearestDistance = dist
+                        nearestCosTheta = cos
                     }
                 }
             }
         }
 
-        // Trigger dynamic haptic vibration
-        hapticDriver.update(maxIntensity)
+        // Trigger dynamic haptic vibration (only when camera is actively tracking)
+        if (trackingState == TrackingState.TRACKING) {
+            hapticDriver.update(maxIntensity)
+        }
 
         // 4. Update Diagnostics UI on main thread
         val allPlanes = currentSession.getAllTrackables(Plane::class.java)

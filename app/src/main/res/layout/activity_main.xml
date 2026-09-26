@@ -137,6 +137,18 @@
                 android:layout_weight="1" />
 
             <Button
+                android:id="@+id/btnTestVibrate"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginEnd="6dp"
+                android:backgroundTint="@color/terminal_border"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:text="测试震动"
+                android:textColor="@color/terminal_green"
+                android:textSize="11sp" />
+
+            <Button
                 android:id="@+id/btnClearAnchors"
                 android:layout_width="wrap_content"
                 android:layout_height="32dp"
