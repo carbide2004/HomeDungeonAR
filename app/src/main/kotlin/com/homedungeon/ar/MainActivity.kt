@@ -360,14 +360,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
 
         // 1. Draw camera feed background with Terminal Vision Shader
-        val timeSeconds = (System.currentTimeMillis() % 10000000L) / 1000.0f
         backgroundRenderer.draw(
             frame = frame,
-            timeSeconds = timeSeconds,
+            frameIndex = (frameCount % 1000).toFloat(),
             intensity = maxIntensity,
-            filterEnabled = terminalFilterEnabled,
-            viewportWidth = viewportWidth,
-            viewportHeight = viewportHeight
+            filterEnabled = terminalFilterEnabled
         )
 
         // Matrices
