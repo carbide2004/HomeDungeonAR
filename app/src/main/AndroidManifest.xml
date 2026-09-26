@@ -2,7 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-feature android:name="android.hardware.camera" android:required="true" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-feature android:name="android.hardware.camera.ar" android:required="true" />
 
     <application
         android:allowBackup="true"
@@ -11,6 +12,9 @@
         android:roundIcon="@android:drawable/sym_def_app_icon"
         android:supportsRtl="true"
         android:theme="@style/Theme.HomeDungeonAR">
+        <meta-data
+            android:name="com.google.ar.core"
+            android:value="required" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

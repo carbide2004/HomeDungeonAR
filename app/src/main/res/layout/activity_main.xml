@@ -4,8 +4,8 @@
     android:layout_height="match_parent"
     android:background="@color/black">
 
-    <androidx.camera.view.PreviewView
-        android:id="@+id/viewFinder"
+    <android.opengl.GLSurfaceView
+        android:id="@+id/surfaceView"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
@@ -22,7 +22,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="[ 终端控制台 · M0 环境验证 ]"
+            android:text="[ 终端控制台 · M1 空间追踪与锚定 ]"
             android:textColor="@color/terminal_green"
             android:textSize="14sp"
             android:textStyle="bold" />
@@ -32,18 +32,59 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="@string/status_calibrating"
+            android:text="正在校准空间基准... (请平移手机扫描地面)"
             android:textColor="@color/white"
             android:textSize="12sp" />
 
         <TextView
-            android:id="@+id/tvFps"
+            android:id="@+id/tvPose"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="帧率: -- FPS | 设备: vivo S30 基准"
+            android:text="坐标: X: +0.00m | Y: +0.00m | Z: +0.00m"
             android:textColor="@color/terminal_green"
             android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/tvInfo"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="平面: 0 | 锚点: 0 | 帧率: -- FPS"
+            android:textColor="@color/white"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <!-- Bottom Controls -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_margin="16dp"
+        android:background="@color/terminal_dark"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="12dp">
+
+        <TextView
+            android:id="@+id/tvHint"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="点击检测到的地面/桌面放置锚点方块"
+            android:textColor="@color/white"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnClearAnchors"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:backgroundTint="@color/terminal_green"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:text="清除锚点"
+            android:textColor="@color/black"
+            android:textSize="12sp" />
     </LinearLayout>
 
     <!-- Permission prompt fallback -->

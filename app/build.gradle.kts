@@ -50,5 +50,8 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
 
+    // ARCore for M1 Tracking
+    implementation(libs.arcore.core)
+
     testImplementation(libs.junit)
 }
