@@ -67,7 +67,8 @@ class BackgroundRenderer {
 
         val fragmentShader = """
             #extension GL_OES_EGL_image_external : require
-            precision mediump float;
+            // 关键：采用 highp 避免移动端 GPU (Adreno/Mali) 浮点精度截断导致噪点丢失
+            precision highp float;
             varying vec2 v_TexCoord;
             uniform samplerExternalOES u_Texture;
             uniform float u_Time;
@@ -75,8 +76,11 @@ class BackgroundRenderer {
             uniform int u_FilterMode;
             uniform vec2 u_Resolution;
 
-            float rand(vec2 co) {
-                return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
+            // 移动端专用抗截断 Hash 算法 (不依赖 sin，在任何高刷屏/移动 GPU 均能稳定产出雪花噪点)
+            float hash(vec2 p) {
+                vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+                p3 += dot(p3, p3.yzx + 33.33);
+                return fract((p3.x + p3.y) * p3.z);
             }
 
             void main() {
@@ -89,20 +93,23 @@ class BackgroundRenderer {
                 vec2 center = vec2(0.5, 0.5);
                 float distFromCenter = length(uv - center);
 
-                // 1. 电磁撕裂抖动 (Horizontal Glitch Slice Jitter)
-                float glitchJitter = 0.0;
-                if (u_Intensity > 0.12) {
-                    float slice = floor(uv.y * 42.0);
-                    float sliceSeed = rand(vec2(slice, floor(u_Time * 14.0)));
-                    if (sliceSeed > (1.0 - u_Intensity * 0.45)) {
-                        glitchJitter = (rand(vec2(slice, u_Time)) - 0.5) * (0.015 + u_Intensity * 0.045);
-                    }
+                // 1. 显式横向扫描撕裂与信号故障条 (VHS Tape / Radar Glitch Tearing)
+                float glitchOffset = 0.0;
+                float glitchLineGlow = 0.0;
+                if (u_Intensity > 0.08) {
+                    // 大切片条带 (低频粗条)
+                    float band1 = step(0.91, hash(vec2(floor(uv.y * 16.0), floor(u_Time * 10.0))));
+                    // 细切片条带 (高频细条)
+                    float band2 = step(0.94, hash(vec2(floor(uv.y * 36.0), floor(u_Time * 18.0))));
+                    
+                    float displacement = (band1 * 0.06 + band2 * 0.12) * (u_Intensity * 1.5);
+                    glitchOffset = displacement;
+                    glitchLineGlow = (band1 + band2) * 0.25 * u_Intensity;
                 }
-                vec2 jitteredUv = uv + vec2(glitchJitter, 0.0);
+                vec2 jitteredUv = uv + vec2(glitchOffset, 0.0);
 
-                // 2. 剧烈异常辐射色散 (Enhanced Chromatic Aberration)
-                // 提高基准与非线性放大，高强度下物体轮廓发生肉眼极明显的红蓝错位分离
-                float chromMagnitude = 0.005 + (u_Intensity * u_Intensity * 0.065) * (distFromCenter + 0.35);
+                // 2. 剧烈异常辐射色散 (Chromatic Aberration)
+                float chromMagnitude = 0.006 + (u_Intensity * u_Intensity * 0.075) * (distFromCenter + 0.35);
                 vec2 redOffset = (jitteredUv - center) * chromMagnitude;
                 vec2 blueOffset = -(jitteredUv - center) * chromMagnitude;
 
@@ -113,32 +120,29 @@ class BackgroundRenderer {
 
                 // 3. 终端冷色分级调色 (Terminal Color Grading)
                 float gray = dot(col, vec3(0.299, 0.587, 0.114));
-                vec3 darkTint = vec3(0.05, 0.14, 0.08); // 墨绿阴影
+                vec3 darkTint = vec3(0.04, 0.14, 0.08); // 墨绿暗部
                 vec3 brightTint = vec3(0.82, 0.96, 0.88); // 冷青高光
                 vec3 graded = mix(darkTint, brightTint, gray);
                 col = mix(col, graded, 0.44);
 
-                // 4. 高频电磁噪波 (Electromagnetic Snow & Noise) - 随异常强度大幅暴增
-                float noise = (rand(uv + vec2(u_Time * 0.09, u_Time * 0.17)) - 0.5);
-                float noiseAmp = 0.04 + (u_Intensity * u_Intensity) * 0.26;
-                col += vec3(noise * noiseAmp);
+                // 4. 像素级高频电磁雪花噪波 (基于实际物理分辨率采样，肉眼绝对清晰可见)
+                vec2 pixelCoord = uv * u_Resolution;
+                float staticNoise = hash(pixelCoord + vec2(u_Time * 123.45, u_Time * 678.90)) - 0.5;
+                float noiseAmp = 0.08 + (u_Intensity * 0.35); // 基础噪点 8%，靠近时暴增到 43% 强烈电磁雪花
+                col += vec3(staticNoise * noiseAmp);
 
-                // 5. 扫描线效果 (Scanlines)
+                // 叠加撕裂处的发光干扰带
+                col += vec3(0.0, glitchLineGlow, glitchLineGlow * 0.6);
+
+                // 5. 监视器扫描线 (Scanlines)
                 float scanline = sin(uv.y * 650.0) * (0.03 + u_Intensity * 0.03);
                 col -= vec3(scanline);
 
-                // 6. 空间压迫暗角向内侵蚀 (Vignette Suffocation)
-                // 强度越高，暗角收缩越紧，强化被怪谈包裹的窒息感
+                // 6. 暗角向内收缩 (Vignette Suffocation)
                 float outerRadius = mix(0.82, 0.52, u_Intensity);
                 float innerRadius = mix(0.32, 0.12, u_Intensity);
                 float vignette = smoothstep(outerRadius, innerRadius, distFromCenter);
                 col *= (vignette * 0.88 + 0.12);
-
-                // 7. 高危辐射亮斑微闪 (Radiation Static Flash on critical proximity)
-                if (u_Intensity > 0.7) {
-                    float flash = step(0.96, rand(vec2(u_Time * 20.0, uv.y)));
-                    col += vec3(flash * 0.22);
-                }
 
                 gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
             }
