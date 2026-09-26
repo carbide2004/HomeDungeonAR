@@ -35,6 +35,9 @@ import com.google.ar.core.exceptions.UnavailableSdkTooOldException
 import com.homedungeon.ar.databinding.ActivityMainBinding
 import com.homedungeon.ar.rendering.BackgroundRenderer
 import com.homedungeon.ar.rendering.CubeRenderer
+import com.homedungeon.ar.haptics.DetectorHapticDriver
+import com.homedungeon.core.DetectorMath
+import com.homedungeon.core.Vector3
 import java.util.concurrent.ArrayBlockingQueue
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -51,6 +54,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private val backgroundRenderer = BackgroundRenderer()
     private val cubeRenderer = CubeRenderer()
+    private lateinit var hapticDriver: DetectorHapticDriver
+
+    private var currentK = 2.0f
 
     private val anchors = ArrayList<Anchor>()
     private val queuedSingleTaps = ArrayBlockingQueue<MotionEvent>(16)
@@ -76,6 +82,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        hapticDriver = DetectorHapticDriver(this)
+
+        binding.btnK1.setOnClickListener { setK(1.0f) }
+        binding.btnK2.setOnClickListener { setK(2.0f) }
+        binding.btnK4.setOnClickListener { setK(4.0f) }
 
         binding.btnGrantPermission.setOnClickListener {
             requestCameraPermission()
@@ -97,6 +108,17 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         setupGlSurfaceView()
     }
 
+    private fun setK(k: Float) {
+        currentK = k
+        binding.btnK1.backgroundTintList = ContextCompat.getColorStateList(this, if (k == 1.0f) R.color.terminal_green else R.color.terminal_dark)
+        binding.btnK1.setTextColor(ContextCompat.getColor(this, if (k == 1.0f) R.color.black else R.color.terminal_green))
+
+        binding.btnK2.backgroundTintList = ContextCompat.getColorStateList(this, if (k == 2.0f) R.color.terminal_green else R.color.terminal_dark)
+        binding.btnK2.setTextColor(ContextCompat.getColor(this, if (k == 2.0f) R.color.black else R.color.terminal_green))
+
+        binding.btnK4.backgroundTintList = ContextCompat.getColorStateList(this, if (k == 4.0f) R.color.terminal_green else R.color.terminal_dark)
+        binding.btnK4.setTextColor(ContextCompat.getColor(this, if (k == 4.0f) R.color.black else R.color.terminal_green))
+    }
     private fun setupGlSurfaceView() {
         binding.surfaceView.preserveEGLContextOnPause = true
         binding.surfaceView.setEGLContextClientVersion(2)
@@ -266,7 +288,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     synchronized(anchors) {
                         anchors.add(newAnchor)
                     }
-                    triggerHapticFeedback()
+                    hapticDriver.triggerOneShotTap()
                     break
                 }
             }
@@ -295,12 +317,43 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             }
         }
 
-        // 3. Update Diagnostics UI on main thread
+        // 3. Calculate Haptic Detector feedback based on nearest anchor
+        var maxIntensity = 0.0f
+        var nearestDistance = -1.0f
+        var nearestCosTheta = -1.0f
+
+        val camPose = camera.pose
+        val camPos = Vector3(camPose.tx(), camPose.ty(), camPose.tz())
+        // In ARCore camera view matrix: row 2 / -Z gives the camera forward vector in world coordinates
+        val camFwd = Vector3(-viewMatrix[2], -viewMatrix[6], -viewMatrix[10])
+
+        if (trackingState == TrackingState.TRACKING) {
+            synchronized(anchors) {
+                for (anchor in anchors) {
+                    if (anchor.trackingState == TrackingState.TRACKING) {
+                        val anchorPose = anchor.pose
+                        val targetPos = Vector3(anchorPose.tx(), anchorPose.ty(), anchorPose.tz())
+                        val (intensity, dist, cos) = DetectorMath.calculateIntensity(
+                            camPos, camFwd, targetPos, k = currentK
+                        )
+                        if (intensity > maxIntensity) {
+                            maxIntensity = intensity
+                            nearestDistance = dist
+                            nearestCosTheta = cos
+                        }
+                    }
+                }
+            }
+        }
+
+        // Trigger dynamic haptic vibration
+        hapticDriver.update(maxIntensity)
+
+        // 4. Update Diagnostics UI on main thread
         val allPlanes = currentSession.getAllTrackables(Plane::class.java)
         val floorCount = allPlanes.count { it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.trackingState == TrackingState.TRACKING }
         val wallCount = allPlanes.count { it.type == Plane.Type.VERTICAL && it.trackingState == TrackingState.TRACKING }
         val anchorCount = synchronized(anchors) { anchors.size }
-        val camPose = camera.pose
 
         runOnUiThread {
             when (trackingState) {
@@ -320,27 +373,16 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 camPose.tx(), camPose.ty(), camPose.tz()
             )
             binding.tvInfo.text = "地面: $floorCount | 墙面: $wallCount | 锚点: $anchorCount | 帧率: $currentFps FPS"
-        }
-    }
 
-    private fun triggerHapticFeedback() {
-        try {
-            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-                vibratorManager.defaultVibrator
+            if (anchorCount > 0 && nearestDistance >= 0f) {
+                val alignPct = (nearestCosTheta.coerceAtLeast(0f) * 100).toInt()
+                binding.tvDetectorHaptics.text = String.format(
+                    "探测: 距离 %.2fm | 对准 %d%% | 强度 I = %.2f (k=%.0f)",
+                    nearestDistance, alignPct, maxIntensity, currentK
+                )
             } else {
-                @Suppress("DEPRECATION")
-                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                binding.tvDetectorHaptics.text = "探测: 未部署异常源 (点击空间部署锚点)"
             }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE))
-            } else {
-                @Suppress("DEPRECATION")
-                vibrator.vibrate(40)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Haptic feedback skipped: ${e.message}")
         }
     }
 

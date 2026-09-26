@@ -9,7 +9,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Terminal Overlay (HUD) -->
+    <!-- Terminal Overlay (Top HUD) -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -22,7 +22,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="[ 终端控制台 · M1 空间追踪与锚定 ]"
+            android:text="[ 终端异常探测仪 · M2.1 触觉调校 ]"
             android:textColor="@color/terminal_green"
             android:textSize="14sp"
             android:textStyle="bold" />
@@ -32,7 +32,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="正在校准空间基准... (请平移手机扫描地面)"
+            android:text="正在校准空间基准..."
             android:textColor="@color/white"
             android:textSize="12sp" />
 
@@ -50,41 +50,112 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="平面: 0 | 锚点: 0 | 帧率: -- FPS"
+            android:text="地面: 0 | 墙面: 0 | 锚点: 0"
             android:textColor="@color/white"
             android:textSize="11sp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="6dp"
+            android:layout_marginBottom="6dp"
+            android:background="@color/terminal_border" />
+
+        <!-- Detector Haptic Readout -->
+        <TextView
+            android:id="@+id/tvDetectorHaptics"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="探测: 距离 --m | 视线对齐 -- | 强度 I = 0.00"
+            android:textColor="@color/terminal_green"
+            android:textSize="12sp"
+            android:textStyle="bold" />
     </LinearLayout>
 
-    <!-- Bottom Controls -->
+    <!-- Bottom Controls & Parameter Tuning -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:layout_margin="16dp"
         android:background="@color/terminal_dark"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
+        android:orientation="vertical"
         android:padding="12dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="指向收束 k: "
+                android:textColor="@color/white"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnK1"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="@color/terminal_dark"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:text="k=1"
+                android:textColor="@color/terminal_green"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnK2"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="@color/terminal_green"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:text="k=2"
+                android:textColor="@color/black"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnK4"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="@color/terminal_dark"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:text="k=4"
+                android:textColor="@color/terminal_green"
+                android:textSize="11sp" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <Button
+                android:id="@+id/btnClearAnchors"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:backgroundTint="@color/terminal_green"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:text="清除锚点"
+                android:textColor="@color/black"
+                android:textSize="11sp" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/tvHint"
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="点击检测到的地面/桌面放置锚点方块"
+            android:layout_marginTop="6dp"
+            android:text="点击墙面/地面放置异常源；对准并靠近时感受震动变化"
             android:textColor="@color/white"
-            android:textSize="12sp" />
-
-        <Button
-            android:id="@+id/btnClearAnchors"
-            android:layout_width="wrap_content"
-            android:layout_height="36dp"
-            android:backgroundTint="@color/terminal_green"
-            android:paddingStart="12dp"
-            android:paddingEnd="12dp"
-            android:text="清除锚点"
-            android:textColor="@color/black"
-            android:textSize="12sp" />
+            android:textSize="11sp" />
     </LinearLayout>
 
     <!-- Permission prompt fallback -->
