@@ -75,14 +75,12 @@ class BackgroundRenderer {
             uniform int u_FilterMode;
             uniform vec2 u_Resolution;
 
-            // 伪随机生成高频噪点
             float rand(vec2 co) {
                 return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
             }
 
             void main() {
                 if (u_FilterMode == 0) {
-                    // 直通模式
                     gl_FragColor = texture2D(u_Texture, v_TexCoord);
                     return;
                 }
@@ -91,40 +89,55 @@ class BackgroundRenderer {
                 vec2 center = vec2(0.5, 0.5);
                 float distFromCenter = length(uv - center);
 
-                // 1. 异常辐射色散 (Chromatic Aberration) - 越靠近异常，边缘色散越明显
-                float chromAberr = 0.003 + u_Intensity * 0.015 * distFromCenter;
-                vec2 redOffset = (uv - center) * chromAberr;
-                vec2 blueOffset = -(uv - center) * chromAberr;
+                // 1. 电磁撕裂抖动 (Horizontal Glitch Slice Jitter)
+                float glitchJitter = 0.0;
+                if (u_Intensity > 0.12) {
+                    float slice = floor(uv.y * 42.0);
+                    float sliceSeed = rand(vec2(slice, floor(u_Time * 14.0)));
+                    if (sliceSeed > (1.0 - u_Intensity * 0.45)) {
+                        glitchJitter = (rand(vec2(slice, u_Time)) - 0.5) * (0.015 + u_Intensity * 0.045);
+                    }
+                }
+                vec2 jitteredUv = uv + vec2(glitchJitter, 0.0);
 
-                float r = texture2D(u_Texture, uv + redOffset).r;
-                float g = texture2D(u_Texture, uv).g;
-                float b = texture2D(u_Texture, uv + blueOffset).b;
+                // 2. 剧烈异常辐射色散 (Enhanced Chromatic Aberration)
+                // 提高基准与非线性放大，高强度下物体轮廓发生肉眼极明显的红蓝错位分离
+                float chromMagnitude = 0.005 + (u_Intensity * u_Intensity * 0.065) * (distFromCenter + 0.35);
+                vec2 redOffset = (jitteredUv - center) * chromMagnitude;
+                vec2 blueOffset = -(jitteredUv - center) * chromMagnitude;
+
+                float r = texture2D(u_Texture, jitteredUv + redOffset).r;
+                float g = texture2D(u_Texture, jitteredUv).g;
+                float b = texture2D(u_Texture, jitteredUv + blueOffset).b;
                 vec3 col = vec3(r, g, b);
 
-                // 2. 终端冷峻调色 (冷调青灰 / 墨绿阴影)
+                // 3. 终端冷色分级调色 (Terminal Color Grading)
                 float gray = dot(col, vec3(0.299, 0.587, 0.114));
-                vec3 darkTint = vec3(0.06, 0.13, 0.09); // 墨绿暗部
-                vec3 brightTint = vec3(0.85, 0.96, 0.89); // 冷青亮部
+                vec3 darkTint = vec3(0.05, 0.14, 0.08); // 墨绿阴影
+                vec3 brightTint = vec3(0.82, 0.96, 0.88); // 冷青高光
                 vec3 graded = mix(darkTint, brightTint, gray);
-                col = mix(col, graded, 0.42); // 混合 42% 终端色调，保留房间轮廓同时营造阴森感
+                col = mix(col, graded, 0.44);
 
-                // 3. 动态高感光电子噪点 (Grain)
-                float noise = (rand(uv + vec2(u_Time * 0.07, u_Time * 0.13)) - 0.5);
-                float noiseAmp = 0.05 + u_Intensity * 0.09;
+                // 4. 高频电磁噪波 (Electromagnetic Snow & Noise) - 随异常强度大幅暴增
+                float noise = (rand(uv + vec2(u_Time * 0.09, u_Time * 0.17)) - 0.5);
+                float noiseAmp = 0.04 + (u_Intensity * u_Intensity) * 0.26;
                 col += vec3(noise * noiseAmp);
 
-                // 4. 监视器微弱扫描线 (Scanlines)
-                float scanline = sin(uv.y * 700.0) * 0.025;
+                // 5. 扫描线效果 (Scanlines)
+                float scanline = sin(uv.y * 650.0) * (0.03 + u_Intensity * 0.03);
                 col -= vec3(scanline);
 
-                // 5. 光学暗角 (Vignette)
-                float vignette = smoothstep(0.80, 0.28, distFromCenter);
-                col *= (vignette * 0.85 + 0.15);
+                // 6. 空间压迫暗角向内侵蚀 (Vignette Suffocation)
+                // 强度越高，暗角收缩越紧，强化被怪谈包裹的窒息感
+                float outerRadius = mix(0.82, 0.52, u_Intensity);
+                float innerRadius = mix(0.32, 0.12, u_Intensity);
+                float vignette = smoothstep(outerRadius, innerRadius, distFromCenter);
+                col *= (vignette * 0.88 + 0.12);
 
-                // 6. 异常靠近时的信号闪烁撕裂微震 (Glitch on high intensity)
-                if (u_Intensity > 0.6) {
-                    float glitchBar = step(0.98, sin(uv.y * 30.0 + u_Time * 15.0));
-                    col += vec3(glitchBar * 0.12);
+                // 7. 高危辐射亮斑微闪 (Radiation Static Flash on critical proximity)
+                if (u_Intensity > 0.7) {
+                    float flash = step(0.96, rand(vec2(u_Time * 20.0, uv.y)));
+                    col += vec3(flash * 0.22);
                 }
 
                 gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
