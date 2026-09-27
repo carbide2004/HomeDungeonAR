@@ -37,11 +37,14 @@ class WallDecalRenderer {
         val w = 0.425f
         val h = 0.575f
 
+        // 关键几何定义：在 ARCore 平面局部坐标系中，+Y 为垂直于墙面的法向量 (指向室内)，
+        // X 和 Z 轴严格平铺于物理表面 (+X 水平向右，-Z 垂直向上，+Z 垂直向下)。
+        // 因此墙纸必须在 X-Z 平面绘制，并将 Y 设为 +5mm (+0.005f) 紧密贴合在物理墙面外侧，杜绝 Z-fighting。
         val vertices = floatArrayOf(
-            -w, -h, 0.005f, // 左下 (稍稍往前偏移 5mm 避免 Z-fighting 闪烁)
-             w, -h, 0.005f, // 右下
-             w,  h, 0.005f, // 右上
-            -w,  h, 0.005f  // 左上
+            -w, 0.005f,  h, // 0: 左下 (uv: 0, 1)
+             w, 0.005f,  h, // 1: 右下 (uv: 1, 1)
+             w, 0.005f, -h, // 2: 右上 (uv: 1, 0)
+            -w, 0.005f, -h  // 3: 左上 (uv: 0, 0)
         )
 
         val texCoords = floatArrayOf(
