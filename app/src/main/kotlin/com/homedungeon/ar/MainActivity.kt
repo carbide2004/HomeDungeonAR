@@ -38,6 +38,7 @@ import com.homedungeon.ar.databinding.ActivityMainBinding
 import com.homedungeon.ar.haptics.DetectorHapticDriver
 import com.homedungeon.ar.rendering.BackgroundRenderer
 import com.homedungeon.ar.rendering.CubeRenderer
+import com.homedungeon.ar.rendering.PlaneVisualizer
 import com.homedungeon.ar.rendering.WallDecalRenderer
 import com.homedungeon.core.AnomalyStage
 import com.homedungeon.core.DetectorMath
@@ -61,6 +62,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private val backgroundRenderer = BackgroundRenderer()
     private val cubeRenderer = CubeRenderer()
     private val wallDecalRenderer = WallDecalRenderer()
+    private val planeVisualizer = PlaneVisualizer()
     private val anomalyStateMachine = WallAnomalyStateMachine()
     private lateinit var hapticDriver: DetectorHapticDriver
     private lateinit var audioEngine: SpatialAudioEngine
@@ -269,6 +271,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         backgroundRenderer.createOnGlThread()
         cubeRenderer.createOnGlThread()
         wallDecalRenderer.createOnGlThread()
+        planeVisualizer.createOnGlThread()
         session?.setCameraTextureName(backgroundRenderer.textureId)
     }
 
@@ -409,7 +412,13 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         camera.getProjectionMatrix(projMatrix, 0, 0.05f, 100.0f)
         camera.getViewMatrix(viewMatrix, 0)
 
-        // 2. Render Placed 3D Anchors & Wall Decals
+        // 2. 渲染已识别的空间平面多边形 (地面绿色、墙面青蓝色)
+        if (trackingState == TrackingState.TRACKING) {
+            val allPlanes = currentSession.getAllTrackables(Plane::class.java)
+            planeVisualizer.drawPlanes(allPlanes, viewMatrix, projMatrix)
+        }
+
+        // 3. Render Placed 3D Anchors & Wall Decals
         if (trackingState == TrackingState.TRACKING) {
             synchronized(anchors) {
                 val anchorIterator = anchors.iterator()
