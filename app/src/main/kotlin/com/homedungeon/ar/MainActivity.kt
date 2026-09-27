@@ -210,7 +210,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 session = Session(this).apply {
                     val config = Config(this).apply {
                         focusMode = Config.FocusMode.AUTO
-                        planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+                        planeFindingMode = Config.PlaneFindingMode.HORIZONTAL
                         lightEstimationMode = Config.LightEstimationMode.AMBIENT_INTENSITY
                         instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
                     }
@@ -527,7 +527,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 "坐标: X: %+.2fm | Y: %+.2fm | Z: %+.2fm",
                 dispPose.tx(), dispPose.ty(), dispPose.tz()
             )
-            binding.tvInfo.text = "地面: $floorCount | 墙面: $wallCount | 锚点: $anchorCount | 帧率: $currentFps FPS"
+            binding.tvInfo.text = "已锁定地面: $floorCount | 锚点: $anchorCount | 帧率: $currentFps FPS"
 
             if (anchorCount > 0 && nearestDistance >= 0f) {
                 val alignPct = (nearestCosTheta.coerceAtLeast(0f) * 100).toInt()

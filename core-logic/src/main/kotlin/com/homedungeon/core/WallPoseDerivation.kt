@@ -25,7 +25,7 @@ object WallPoseDerivation {
         floorY: Float,
         camPos: Vector3,
         camForwardRay: Vector3,
-        targetHeightAboveFloor: Float = 1.15f
+        targetHeightAboveFloor: Float = 0.70f
     ): WallSurfacePose? {
         // 如果视线平行于地面或向上看 (ray.y >= 0)，无法与下方地面相交
         if (camForwardRay.y >= -0.05f) {
@@ -51,11 +51,11 @@ object WallPoseDerivation {
         val normalZ = -camForwardRay.z / hLen
         val normal = Vector3(normalX, 0f, normalZ)
 
-        // 墙贴图中心位置: 墙根正上方 targetHeightAboveFloor
+        // 墙贴图中心位置: 墙根正上方 targetHeightAboveFloor (默认降为 0.70m，贴图中心齐胸，底部贴近地面)
         val centerPos = Vector3(rootX, floorY + targetHeightAboveFloor, rootZ)
 
-        // 偏航角 Yaw: 绕世界 Y 轴旋转的角度，使得贴图正面正对房间内
-        val yawRad = atan2(camForwardRay.x, camForwardRay.z)
+        // 偏航角 Yaw: 绕世界 Y 轴旋转。由于之前反了 180°，取 -camForwardRay 即可将贴图正面正对房间内
+        val yawRad = atan2(-camForwardRay.x, -camForwardRay.z)
         val yawDeg = (yawRad * (180f / Math.PI.toFloat()))
 
         return WallSurfacePose(centerPos, normal, yawDeg)

@@ -62,7 +62,8 @@ class PlaneVisualizer {
         val mvpMatrix = FloatArray(16)
 
         for (plane in planes) {
-            if (plane.trackingState != TrackingState.TRACKING || plane.subsumedBy != null) {
+            // 仅渲染水平地面，彻底忽略垂直墙面
+            if (plane.type == Plane.Type.VERTICAL || plane.trackingState != TrackingState.TRACKING || plane.subsumedBy != null) {
                 continue
             }
 
