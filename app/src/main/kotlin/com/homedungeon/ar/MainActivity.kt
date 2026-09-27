@@ -425,9 +425,23 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         camera.getProjectionMatrix(projMatrix, 0, 0.05f, 100.0f)
         camera.getViewMatrix(viewMatrix, 0)
 
-        // 2. 渲染经过严苛过滤的唯一主地面 (若已触地校准，严密吸附于校准高度)
+        // 2. 渲染经过严苛过滤的唯一主地面 (官方标准 PlaneRenderer 网格羽化)
         if (trackingState == TrackingState.TRACKING) {
-            planeVisualizer.drawMainFloor(primaryFloorPlane, calibratedFloorY, viewMatrix, projMatrix)
+            planeVisualizer.drawMainFloor(primaryFloorPlane, viewMatrix, projMatrix)
+
+            // 行业标准：屏幕中心对准物理地面时，在地面渲染贴地锁定光圈 (Ground Reticle)
+            val centerX = viewportWidth / 2f
+            val centerY = viewportHeight / 2f
+            val hitResults = frame.hitTest(centerX, centerY)
+            for (hit in hitResults) {
+                val trackable = hit.trackable
+                if (trackable is Plane && trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING) {
+                    val reticleMatrix = FloatArray(16)
+                    hit.hitPose.toMatrix(reticleMatrix, 0)
+                    planeVisualizer.drawGroundReticle(reticleMatrix, viewMatrix, projMatrix)
+                    break
+                }
+            }
         }
 
         // 3. 渲染实体调试位置标点 (仅在开启 showDebugMarker 且实体激活时绘制紧凑红色微小线框，验证其实体走位)

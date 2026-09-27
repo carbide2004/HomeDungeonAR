@@ -7,6 +7,7 @@ import com.google.ar.core.TrackingState
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.nio.ShortBuffer
 
 class PlaneVisualizer {
 
@@ -14,44 +15,149 @@ class PlaneVisualizer {
     private var uMvpMatrix = 0
     private var uColor = 0
     private var aPosition = 0
+    private var aTexCoord = 0
+
+    // 贴地准星 (Ground Reticle) 渲染管线
+    private var reticleProgram = 0
+    private var reticleMvp = 0
+    private var reticleColor = 0
+    private var reticlePos = 0
+
+    private val reticleVertexBuffer: FloatBuffer
+    private val reticleIndexBuffer: ShortBuffer
+    private val reticleIndexCount: Int
+
+    init {
+        // 构建地面圆形瞄准光环几何体 (半径 0.28m, 32 个分段)
+        val segments = 32
+        val radius = 0.28f
+        val vertices = ArrayList<Float>()
+        val indices = ArrayList<Short>()
+
+        // 顶点 0: 圆心
+        vertices.add(0f); vertices.add(0.003f); vertices.add(0f)
+
+        for (i in 0..segments) {
+            val angle = (i * 2.0 * Math.PI / segments).toFloat()
+            val x = radius * kotlin.math.cos(angle)
+            val z = radius * kotlin.math.sin(angle)
+            vertices.add(x)
+            vertices.add(0.003f) // 贴地浮起 3mm
+            vertices.add(z)
+
+            if (i > 0) {
+                indices.add(0)
+                indices.add(i.toShort())
+                indices.add((i + 1).toShort())
+            }
+        }
+        reticleIndexCount = indices.size
+
+        val vArray = FloatArray(vertices.size) { vertices[it] }
+        reticleVertexBuffer = ByteBuffer.allocateDirect(vArray.size * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+            .apply {
+                put(vArray)
+                position(0)
+            }
+
+        val iArray = ShortArray(indices.size) { indices[it] }
+        reticleIndexBuffer = ByteBuffer.allocateDirect(iArray.size * 2)
+            .order(ByteOrder.nativeOrder())
+            .asShortBuffer()
+            .apply {
+                put(iArray)
+                position(0)
+            }
+    }
 
     fun createOnGlThread() {
-        val vertexShader = """
+        // 1. 官方级带网格纹理与边缘羽化的平面 Shader
+        val vs = """
             uniform mat4 u_MvpMatrix;
             attribute vec4 a_Position;
+            varying vec2 v_LocalPos;
             void main() {
                 gl_Position = u_MvpMatrix * a_Position;
+                v_LocalPos = a_Position.xz;
             }
         """.trimIndent()
 
-        val fragmentShader = """
+        val fs = """
             precision mediump float;
+            varying vec2 v_LocalPos;
             uniform vec4 u_Color;
             void main() {
-                gl_FragColor = u_Color;
+                // 工业级 Grid & Soft Edge: 在局部空间每隔 0.2m 生成细腻坐标网线
+                vec2 grid = abs(fract(v_LocalPos * 5.0 - 0.5) - 0.5) / fwidth(v_LocalPos * 5.0);
+                float line = min(grid.x, grid.y);
+                float c = 1.0 - min(line, 1.0);
+                
+                // 距离平面原点径向渐变衰减 (消除任何生硬边界产生的翘起视错觉)
+                float dist = length(v_LocalPos);
+                float alpha = smoothstep(1.8, 0.2, dist) * u_Color.a;
+                
+                vec3 finalCol = mix(u_Color.rgb * 0.7, vec3(0.0, 1.0, 0.6), c * 0.75);
+                gl_FragColor = vec4(finalCol, alpha * (0.35 + c * 0.65));
             }
         """.trimIndent()
 
-        val vs = ShaderUtil.loadGLShader(GLES20.GL_VERTEX_SHADER, vertexShader)
-        val fs = ShaderUtil.loadGLShader(GLES20.GL_FRAGMENT_SHADER, fragmentShader)
+        val vShader = ShaderUtil.loadGLShader(GLES20.GL_VERTEX_SHADER, vs)
+        val fShader = ShaderUtil.loadGLShader(GLES20.GL_FRAGMENT_SHADER, fs)
 
         program = GLES20.glCreateProgram().also {
-            GLES20.glAttachShader(it, vs)
-            GLES20.glAttachShader(it, fs)
+            GLES20.glAttachShader(it, vShader)
+            GLES20.glAttachShader(it, fShader)
             GLES20.glLinkProgram(it)
         }
 
         uMvpMatrix = GLES20.glGetUniformLocation(program, "u_MvpMatrix")
         uColor = GLES20.glGetUniformLocation(program, "u_Color")
         aPosition = GLES20.glGetAttribLocation(program, "a_Position")
+
+        // 2. 贴地圆环光标 Shader
+        val rvs = """
+            uniform mat4 u_MvpMatrix;
+            attribute vec4 a_Position;
+            varying vec2 v_Pos;
+            void main() {
+                gl_Position = u_MvpMatrix * a_Position;
+                v_Pos = a_Position.xz;
+            }
+        """.trimIndent()
+
+        val rfs = """
+            precision mediump float;
+            varying vec2 v_Pos;
+            uniform vec4 u_Color;
+            void main() {
+                float dist = length(v_Pos) / 0.28;
+                // 空心光环效果
+                float ring = smoothstep(0.70, 0.88, dist) - smoothstep(0.96, 1.0, dist);
+                gl_FragColor = vec4(u_Color.rgb, ring * u_Color.a);
+            }
+        """.trimIndent()
+
+        val rvShader = ShaderUtil.loadGLShader(GLES20.GL_VERTEX_SHADER, rvs)
+        val rfShader = ShaderUtil.loadGLShader(GLES20.GL_FRAGMENT_SHADER, rfs)
+
+        reticleProgram = GLES20.glCreateProgram().also {
+            GLES20.glAttachShader(it, rvShader)
+            GLES20.glAttachShader(it, rfShader)
+            GLES20.glLinkProgram(it)
+        }
+
+        reticleMvp = GLES20.glGetUniformLocation(reticleProgram, "u_MvpMatrix")
+        reticleColor = GLES20.glGetUniformLocation(reticleProgram, "u_Color")
+        reticlePos = GLES20.glGetAttribLocation(reticleProgram, "a_Position")
     }
 
     /**
-     * 强行将地面多边形投影到绝对重力水平面上 (剔除任何 Pitch / Roll 倾角，彻底杜绝上翘与下斜)
+     * 按照 Google 官方规范绘制主地面 (严格保留 centerPose 本地参考系，结合羽化着色)
      */
     fun drawMainFloor(
         mainFloor: Plane?,
-        calibratedFloorY: Float?,
         viewMatrix: FloatArray,
         projMatrix: FloatArray
     ) {
@@ -72,22 +178,16 @@ class PlaneVisualizer {
         val mvMatrix = FloatArray(16)
         val mvpMatrix = FloatArray(16)
 
-        // 核心修复: 构造完全无旋转倾角的单位矩阵，仅平移到 (center.x, floorY, center.z)
-        // 彻底丢弃 ARCore 平面自身带有微小误差的 Pitch / Roll 四元数！
-        Matrix.setIdentityM(modelMatrix, 0)
-        val cPose = mainFloor.centerPose
-        val targetY = calibratedFloorY ?: cPose.ty()
-        Matrix.translateM(modelMatrix, 0, cPose.tx(), targetY, cPose.tz())
-
+        // 严格遵循官方实现：使用 centerPose.toMatrix 确保局部点阵与相机世界严格对齐
+        mainFloor.centerPose.toMatrix(modelMatrix, 0)
         Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, modelMatrix, 0)
         Matrix.multiplyMM(mvpMatrix, 0, projMatrix, 0, mvMatrix, 0)
         GLES20.glUniformMatrix4fv(uMvpMatrix, 1, false, mvpMatrix, 0)
 
-        // 顶点 Y 轴在局部坐标中严格锁死为 0 (完全平铺于水平面)，绝不容许任何微小倾斜
         val vertexArray = FloatArray(pointCount * 3)
         for (i in 0 until pointCount) {
             vertexArray[i * 3 + 0] = polygon.get(i * 2 + 0)
-            vertexArray[i * 3 + 1] = 0.001f // 仅略微上浮 1mm 避免闪烁
+            vertexArray[i * 3 + 1] = 0.001f
             vertexArray[i * 3 + 2] = polygon.get(i * 2 + 1)
         }
 
@@ -102,16 +202,44 @@ class PlaneVisualizer {
         GLES20.glVertexAttribPointer(aPosition, 3, GLES20.GL_FLOAT, false, 0, vertexBuffer)
         GLES20.glEnableVertexAttribArray(aPosition)
 
-        // 填充半透明终端荧光绿
-        GLES20.glUniform4f(uColor, 0.0f, 0.95f, 0.45f, 0.24f)
+        // 柔和羽化半透明绿
+        GLES20.glUniform4f(uColor, 0.0f, 0.85f, 0.45f, 0.35f)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, pointCount)
 
-        // 勾勒高对比度边框轮廓
-        GLES20.glLineWidth(5.0f)
-        GLES20.glUniform4f(uColor, 0.2f, 1.0f, 0.6f, 0.85f)
-        GLES20.glDrawArrays(GLES20.GL_LINE_LOOP, 0, pointCount)
-
         GLES20.glDisableVertexAttribArray(aPosition)
+        GLES20.glDepthMask(true)
+        GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
+    /**
+     * 行业标准：在当前准心命中的物理地面上渲染贴地呼吸光环
+     */
+    fun drawGroundReticle(
+        reticleMatrix: FloatArray,
+        viewMatrix: FloatArray,
+        projMatrix: FloatArray
+    ) {
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDepthMask(false)
+        GLES20.glUseProgram(reticleProgram)
+
+        val mvMatrix = FloatArray(16)
+        val mvpMatrix = FloatArray(16)
+        Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, reticleMatrix, 0)
+        Matrix.multiplyMM(mvpMatrix, 0, projMatrix, 0, mvMatrix, 0)
+
+        GLES20.glUniformMatrix4fv(reticleMvp, 1, false, mvpMatrix, 0)
+        GLES20.glUniform4f(reticleColor, 0.0f, 1.0f, 0.6f, 0.85f)
+
+        reticleVertexBuffer.position(0)
+        GLES20.glVertexAttribPointer(reticlePos, 3, GLES20.GL_FLOAT, false, 0, reticleVertexBuffer)
+        GLES20.glEnableVertexAttribArray(reticlePos)
+
+        reticleIndexBuffer.position(0)
+        GLES20.glDrawElements(GLES20.GL_TRIANGLES, reticleIndexCount, GLES20.GL_UNSIGNED_SHORT, reticleIndexBuffer)
+
+        GLES20.glDisableVertexAttribArray(reticlePos)
         GLES20.glDepthMask(true)
         GLES20.glDisable(GLES20.GL_BLEND)
     }
