@@ -299,15 +299,33 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val camera = frame.camera
         val trackingState = camera.trackingState
 
-        // 安全处理由 UI 按钮触发的贴地物理零点校准 (在 GL 渲染线程安全执行)
+        // 安全处理准心锁定地面零点 (从屏幕中心向视线内的可见地面发射射线精确求交)
         if (pendingCalibrateFloor && trackingState == TrackingState.TRACKING) {
             pendingCalibrateFloor = false
-            val currentCamY = camera.displayOrientedPose.ty()
-            calibratedFloorY = currentCamY
-            runOnUiThread {
-                hapticDriver.triggerOneShotTap(binding.root)
-                Toast.makeText(this, "地面高度零点已物理锁定: ${"%.2f".format(currentCamY)}m", Toast.LENGTH_SHORT).show()
-                binding.btnCalibrateFloor.text = "零点: ${"%.2f".format(currentCamY)}m"
+            val centerX = viewportWidth / 2f
+            val centerY = viewportHeight / 2f
+            val hitResults = frame.hitTest(centerX, centerY)
+
+            var lockedY: Float? = null
+            for (hit in hitResults) {
+                val trackable = hit.trackable
+                if (trackable is Plane && trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING) {
+                    lockedY = hit.hitPose.ty()
+                    break
+                }
+            }
+
+            if (lockedY != null) {
+                calibratedFloorY = lockedY
+                runOnUiThread {
+                    hapticDriver.triggerOneShotTap(binding.root)
+                    Toast.makeText(this, "地面零点已从准心位置锁定: ${"%.2f".format(lockedY)}m", Toast.LENGTH_SHORT).show()
+                    binding.btnCalibrateFloor.text = "零点: ${"%.2f".format(lockedY)}m"
+                }
+            } else {
+                runOnUiThread {
+                    Toast.makeText(this, "未对准地面！请将屏幕中心准星对准地面后再点", Toast.LENGTH_SHORT).show()
+                }
             }
         }
 
@@ -443,7 +461,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 val stagePrompt = when (crawlerEntity.state) {
                     EntityState.IDLE -> {
                         if (calibratedFloorY == null) {
-                            "【步骤 1/2】请贴近真实地面，点击「🎯 贴地校准零点」"
+                            "【步骤 1/2】准心对准可见地面，点击「🎯 锁定地面零点」"
                         } else if (primaryFloorPlane != null) {
                             "【步骤 2/2】基准已锁定！点击绿网地面投放 [SCP 盲爪]"
                         } else {
@@ -467,7 +485,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 binding.tvStatus.text = "追踪丢失 (尝试面向光线充足区域)"
             }
 
-            val calibText = if (calibratedFloorY != null) "已物理对齐(Y=${"%.2f".format(calibratedFloorY)}m)" else "未校准"
+            binding.tvPose.text = String.format(
+                "坐标: X: %+.2fm | Y: %+.2fm | Z: %+.2fm",
+                dispPose.tx(), dispPose.ty(), dispPose.tz()
+            )
+
+            val calibText = if (calibratedFloorY != null) "已锁定(Y=${"%.2f".format(calibratedFloorY)}m)" else "未锁定"
             binding.tvInfo.text = "主地面: ${"%.1f".format(floorArea)}㎡ ($calibText) | 帧率: $currentFps FPS"
 
             if (crawlerEntity.state != EntityState.IDLE && targetDistance >= 0f) {

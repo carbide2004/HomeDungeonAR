@@ -56,6 +56,15 @@
             android:textSize="11sp" />
 
         <TextView
+            android:id="@+id/tvPose"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="坐标: X: +0.00m | Y: +0.00m | Z: +0.00m"
+            android:textColor="@color/terminal_green"
+            android:textSize="11sp" />
+
+        <TextView
             android:id="@+id/tvInfo"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -173,7 +182,7 @@
                 android:backgroundTint="@color/terminal_green"
                 android:paddingStart="4dp"
                 android:paddingEnd="4dp"
-                android:text="🎯 贴地校准零点"
+                android:text="🎯 准心锁定地面零点"
                 android:textColor="@color/black"
                 android:textSize="11sp"
                 android:textStyle="bold" />
