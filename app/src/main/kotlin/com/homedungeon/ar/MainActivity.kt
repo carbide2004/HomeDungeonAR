@@ -301,12 +301,23 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val camera = frame.camera
         val trackingState = camera.trackingState
 
-        val dispPose = camera.displayOrientedPose
-        val camPos = Vector3(dispPose.tx(), dispPose.ty(), dispPose.tz())
-        val zAxis = dispPose.zAxis
-        val camFwd = Vector3(-zAxis[0], -zAxis[1], -zAxis[2])
-        val xAxis = dispPose.xAxis
-        val camRight = Vector3(xAxis[0], xAxis[1], xAxis[2])
+        // Matrices
+        val projMatrix = FloatArray(16)
+        val viewMatrix = FloatArray(16)
+        camera.getProjectionMatrix(projMatrix, 0, 0.05f, 100.0f)
+        camera.getViewMatrix(viewMatrix, 0)
+
+        // 核心数学修正：从 viewMatrix 的逆矩阵直接提取相机在世界空间中的绝对真实位置与视线向量！
+        // 在 OpenGL 中，viewMatrix 的第 3 列 (索引 2, 6, 10) 正是相机的视线后方 (+Z)，
+        // 取反即为相机的严格正前方向量 (-viewMatrix[2], -viewMatrix[6], -viewMatrix[10])
+        val invViewMatrix = FloatArray(16)
+        Matrix.invertM(invViewMatrix, 0, viewMatrix, 0)
+
+        val camPos = Vector3(invViewMatrix[12], invViewMatrix[13], invViewMatrix[14])
+        // 视线前向单位向量：
+        val camFwd = Vector3(-viewMatrix[2], -viewMatrix[6], -viewMatrix[10]).normalized()
+        // 屏幕右侧单位向量：
+        val camRight = Vector3(viewMatrix[0], viewMatrix[4], viewMatrix[8]).normalized()
 
         // 核心：利用物理重力反投影计算准星投向物理地表的绝对交点
         // 彻底丢弃单目 ARCore 不可靠的平面拟合，由重力先验保证绝对水平、绝不倾斜
@@ -387,19 +398,13 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             filterEnabled = terminalFilterEnabled
         )
 
-        // Matrices
-        val projMatrix = FloatArray(16)
-        val viewMatrix = FloatArray(16)
-        camera.getProjectionMatrix(projMatrix, 0, 0.05f, 100.0f)
-        camera.getViewMatrix(viewMatrix, 0)
-
         // 2. 渲染严格水平的物理贴地光环 (彻底消除 ARCore 原始网格与上翘下斜)
         if (trackingState == TrackingState.TRACKING) {
             currentGroundTargetPos?.let { target ->
                 groundReticleRenderer.drawAtGroundPosition(
-                    groundX = target.x,
-                    groundY = target.y,
-                    groundZ = target.z,
+                    gx = target.x,
+                    gy = target.y,
+                    gz = target.z,
                     viewMatrix = viewMatrix,
                     projMatrix = projMatrix
                 )

@@ -8,7 +8,7 @@ import java.nio.FloatBuffer
 import java.nio.ShortBuffer
 
 /**
- * 纯物理贴地圆环渲染器：严格垂直于重力、紧密贴合物理地表
+ * 纯物理贴地圆环：顶点严格平铺在 X-Z 水平地面，法向量垂直向上 (0, 1, 0)
  */
 class GroundReticleRenderer {
 
@@ -22,19 +22,23 @@ class GroundReticleRenderer {
     private val indexCount: Int
 
     init {
-        val segments = 40
-        val radius = 0.32f
+        // 构建地面水平圆形瞄准光环几何体 (半径 0.35m, 48 个平滑分段)
+        // 关键：在水平地面局部空间中，X 为水平，Z 为进深，Y 严格为 0 (平铺在地面上)
+        val segments = 48
+        val radius = 0.35f
         val vertices = ArrayList<Float>()
         val indices = ArrayList<Short>()
 
-        vertices.add(0f); vertices.add(0.002f); vertices.add(0f)
+        // 顶点 0: 圆心 (X=0, Y=0, Z=0)
+        vertices.add(0f); vertices.add(0.001f); vertices.add(0f)
 
         for (i in 0..segments) {
             val angle = (i * 2.0 * Math.PI / segments).toFloat()
             val x = radius * kotlin.math.cos(angle)
             val z = radius * kotlin.math.sin(angle)
+            // 顶点坐标: (x, 0.001f, z) 严格平铺在水平面上
             vertices.add(x)
-            vertices.add(0.002f)
+            vertices.add(0.001f) // 上浮 1mm 避免地砖 Z-fighting
             vertices.add(z)
 
             if (i > 0) {
@@ -68,23 +72,28 @@ class GroundReticleRenderer {
         val vs = """
             uniform mat4 u_MvpMatrix;
             attribute vec4 a_Position;
-            varying vec2 v_Pos;
+            varying vec2 v_GroundPos;
             void main() {
                 gl_Position = u_MvpMatrix * a_Position;
-                v_Pos = a_Position.xz;
+                // 将 X-Z 平面坐标传递给片段着色器计算同心圆环
+                v_GroundPos = a_Position.xz;
             }
         """.trimIndent()
 
         val fs = """
             precision mediump float;
-            varying vec2 v_Pos;
+            varying vec2 v_GroundPos;
             uniform vec4 u_Color;
             void main() {
-                float dist = length(v_Pos) / 0.32;
-                // 科技感双环扫描光标
-                float outerRing = smoothstep(0.78, 0.88, dist) - smoothstep(0.96, 1.0, dist);
-                float centerDot = 1.0 - smoothstep(0.0, 0.08, dist);
-                float alpha = clamp(outerRing + centerDot * 0.8, 0.0, 1.0);
+                // 距离地面圆心的归一化物理半径 [0, 1]
+                float dist = length(v_GroundPos) / 0.35;
+                
+                // 绘制双层同心细环 + 中心微标
+                float outerRing = smoothstep(0.85, 0.90, dist) - smoothstep(0.98, 1.0, dist);
+                float innerRing = smoothstep(0.40, 0.44, dist) - smoothstep(0.50, 0.54, dist);
+                float centerDot = 1.0 - smoothstep(0.0, 0.06, dist);
+                
+                float alpha = clamp(outerRing * 0.9 + innerRing * 0.5 + centerDot * 0.8, 0.0, 1.0);
                 gl_FragColor = vec4(u_Color.rgb, alpha * u_Color.a);
             }
         """.trimIndent()
@@ -104,12 +113,12 @@ class GroundReticleRenderer {
     }
 
     /**
-     * 在世界坐标 (x, groundY, z) 处绘制绝对水平贴地的发光圆环
+     * 在世界物理地面坐标 (gx, gy, gz) 处绘制绝对水平贴地的发光圆环
      */
     fun drawAtGroundPosition(
-        groundX: Float,
-        groundY: Float,
-        groundZ: Float,
+        gx: Float,
+        gy: Float,
+        gz: Float,
         viewMatrix: FloatArray,
         projMatrix: FloatArray
     ) {
@@ -122,15 +131,15 @@ class GroundReticleRenderer {
         val mvMatrix = FloatArray(16)
         val mvpMatrix = FloatArray(16)
 
-        // 构造纯水平重力对齐变换矩阵 (旋转为单位阵，绝对平行于物理地面，杜绝任何上翘下斜)
+        // 核心：旋转为严格单位阵 (法向量永远严格垂直于物理重力 0, 1, 0)
         Matrix.setIdentityM(modelMatrix, 0)
-        Matrix.translateM(modelMatrix, 0, groundX, groundY, groundZ)
+        Matrix.translateM(modelMatrix, 0, gx, gy, gz)
 
         Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, modelMatrix, 0)
         Matrix.multiplyMM(mvpMatrix, 0, projMatrix, 0, mvMatrix, 0)
 
         GLES20.glUniformMatrix4fv(uMvpMatrix, 1, false, mvpMatrix, 0)
-        GLES20.glUniform4f(uColor, 0.0f, 1.0f, 0.65f, 0.90f)
+        GLES20.glUniform4f(uColor, 0.0f, 1.0f, 0.55f, 0.90f)
 
         vertexBuffer.position(0)
         GLES20.glVertexAttribPointer(aPosition, 3, GLES20.GL_FLOAT, false, 0, vertexBuffer)
