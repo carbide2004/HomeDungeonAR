@@ -75,6 +75,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var terminalFilterEnabled = true
     private var showDebugMarker = true
     private var calibratedFloorY: Float? = null
+    @Volatile
+    private var pendingCalibrateFloor = false
     private var viewportWidth = 1080
     private var viewportHeight = 2400
     private var lastFrameTimestamp = System.currentTimeMillis()
@@ -111,15 +113,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         binding.btnK4.setOnClickListener { setK(4.0f) }
 
         binding.btnCalibrateFloor.setOnClickListener {
-            // 获取当前相机的物理世界高度，将其直接锁定为物理地面零点
-            val currentFrame = session?.update()
-            val cameraPose = currentFrame?.camera?.displayOrientedPose
-            if (cameraPose != null) {
-                calibratedFloorY = cameraPose.ty()
-                hapticDriver.triggerOneShotTap(binding.root)
-                Toast.makeText(this, "地面高度零点已校准: ${"%.2f".format(calibratedFloorY)}m", Toast.LENGTH_SHORT).show()
-                binding.btnCalibrateFloor.text = "零点: ${"%.2f".format(calibratedFloorY)}m"
-            }
+            // 标记在下一次 GL 渲染线程的 update() 帧中安全获取物理位姿，杜绝 MissingGlContextException
+            pendingCalibrateFloor = true
         }
 
         binding.btnToggleDebugMarker.setOnClickListener {
@@ -303,6 +298,18 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
         val camera = frame.camera
         val trackingState = camera.trackingState
+
+        // 安全处理由 UI 按钮触发的贴地物理零点校准 (在 GL 渲染线程安全执行)
+        if (pendingCalibrateFloor && trackingState == TrackingState.TRACKING) {
+            pendingCalibrateFloor = false
+            val currentCamY = camera.displayOrientedPose.ty()
+            calibratedFloorY = currentCamY
+            runOnUiThread {
+                hapticDriver.triggerOneShotTap(binding.root)
+                Toast.makeText(this, "地面高度零点已物理锁定: ${"%.2f".format(currentCamY)}m", Toast.LENGTH_SHORT).show()
+                binding.btnCalibrateFloor.text = "零点: ${"%.2f".format(currentCamY)}m"
+            }
+        }
 
         // Update FPS
         frameCount++
