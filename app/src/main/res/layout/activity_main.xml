@@ -9,6 +9,16 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Center Reticle (瞄准准星: 引导对准踢脚线/墙根) -->
+    <ImageView
+        android:id="@+id/ivReticle"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_gravity="center"
+        android:src="@android:drawable/ic_menu_crop"
+        android:tint="@color/terminal_green"
+        android:alpha="0.75" />
+
     <!-- Terminal Overlay (Top HUD) -->
     <LinearLayout
         android:layout_width="match_parent"

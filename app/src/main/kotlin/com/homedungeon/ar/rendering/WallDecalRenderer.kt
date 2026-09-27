@@ -33,18 +33,16 @@ class WallDecalRenderer {
     private val indexBuffer: ShortBuffer
 
     init {
-        // 墙纸尺寸: 宽 0.85m, 高 1.15m, 紧贴锚点墙面
+        // 墙纸物理尺寸: 宽 0.85m, 高 1.15m
+        // 在贴图自身的局部坐标系中: 严格为立着的垂直平面 (X 沿水平, Y 沿垂直方向, Z=0)
         val w = 0.425f
         val h = 0.575f
 
-        // 关键几何定义：在 ARCore 平面局部坐标系中，+Y 为垂直于墙面的法向量 (指向室内)，
-        // X 和 Z 轴严格平铺于物理表面 (+X 水平向右，-Z 垂直向上，+Z 垂直向下)。
-        // 因此墙纸必须在 X-Z 平面绘制，并将 Y 设为 +5mm (+0.005f) 紧密贴合在物理墙面外侧，杜绝 Z-fighting。
         val vertices = floatArrayOf(
-            -w, 0.005f,  h, // 0: 左下 (uv: 0, 1)
-             w, 0.005f,  h, // 1: 右下 (uv: 1, 1)
-             w, 0.005f, -h, // 2: 右上 (uv: 1, 0)
-            -w, 0.005f, -h  // 3: 左上 (uv: 0, 0)
+            -w, -h, 0.0f, // 0: 左下 (uv: 0, 1)
+             w, -h, 0.0f, // 1: 右下 (uv: 1, 1)
+             w,  h, 0.0f, // 2: 右上 (uv: 1, 0)
+            -w,  h, 0.0f  // 3: 左上 (uv: 0, 0)
         )
 
         val texCoords = floatArrayOf(
@@ -82,7 +80,6 @@ class WallDecalRenderer {
     }
 
     fun createOnGlThread() {
-        // 1. 生成并加载两张老旧黄色墙纸位图
         val bmpBase = createWallpaperBitmap(isRevealed = false)
         val bmpRevealed = createWallpaperBitmap(isRevealed = true)
 
@@ -97,7 +94,6 @@ class WallDecalRenderer {
         bmpBase.recycle()
         bmpRevealed.recycle()
 
-        // 2. 着色器编译与链接
         val vertexShader = """
             uniform mat4 u_MvpMatrix;
             attribute vec4 a_Position;
@@ -202,9 +198,6 @@ class WallDecalRenderer {
         GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
     }
 
-    /**
-     * 程序化绘制《黄色墙纸》受损老旧墙面贴图
-     */
     private fun createWallpaperBitmap(isRevealed: Boolean): Bitmap {
         val width = 512
         val height = 768
@@ -212,14 +205,14 @@ class WallDecalRenderer {
         val canvas = Canvas(bitmap)
 
         // 1. 泛黄斑驳旧墙纸底色
-        canvas.drawColor(Color.argb(230, 68, 62, 38)) // 沉暗暗黄
+        canvas.drawColor(Color.argb(235, 78, 70, 42))
 
         val paint = Paint().apply {
             isAntiAlias = true
         }
 
-        // 2. 绘制枯萎藤蔓纹理 (Vines)
-        paint.color = Color.argb(160, 42, 40, 22)
+        // 2. 绘制枯萎藤蔓纹理
+        paint.color = Color.argb(170, 44, 42, 22)
         paint.strokeWidth = 6f
         paint.style = Paint.Style.STROKE
 
@@ -233,7 +226,7 @@ class WallDecalRenderer {
             canvas.drawPath(path, paint)
         }
 
-        // 3. 绘制 6 个模糊人脸轮廓
+        // 3. 绘制 6 个人脸轮廓
         val facePositions = listOf(
             Pair(140f, 180f), Pair(360f, 190f),
             Pair(160f, 380f), Pair(340f, 400f),
@@ -245,22 +238,20 @@ class WallDecalRenderer {
         for ((fx, fy) in facePositions) {
             if (!isRevealed) {
                 // 阶段 1: 侧脸与微弱阴影轮廓
-                paint.color = Color.argb(110, 28, 26, 14)
+                paint.color = Color.argb(120, 32, 30, 16)
                 canvas.drawOval(fx - 32f, fy - 45f, fx + 28f, fy + 45f, paint)
-                // 侧脸鼻尖与下巴阴影
-                paint.color = Color.argb(140, 20, 18, 10)
+                paint.color = Color.argb(150, 22, 20, 12)
                 canvas.drawCircle(fx + 18f, fy - 5f, 12f, paint)
             } else {
                 // 阶段 3: 人脸骤然全部转正！空洞漆黑眼眶直视屏幕
-                paint.color = Color.argb(200, 30, 28, 16)
+                paint.color = Color.argb(220, 32, 30, 18)
                 canvas.drawOval(fx - 38f, fy - 48f, fx + 38f, fy + 48f, paint)
 
                 // 两个空洞眼眶
-                paint.color = Color.argb(240, 8, 8, 4)
+                paint.color = Color.argb(255, 8, 8, 4)
                 canvas.drawCircle(fx - 14f, fy - 10f, 7f, paint)
                 canvas.drawCircle(fx + 14f, fy - 10f, 7f, paint)
 
-                // 微张的下垂嘴唇
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = 3f
                 canvas.drawArc(fx - 12f, fy + 12f, fx + 12f, fy + 26f, 0f, 180f, false, paint)
@@ -270,7 +261,7 @@ class WallDecalRenderer {
 
         // 4. 阶段 3 浮现四个暗红大字：“到墙里来”
         if (isRevealed) {
-            paint.color = Color.argb(220, 175, 45, 25) // 渗血暗红
+            paint.color = Color.argb(235, 185, 40, 25)
             paint.textSize = 58f
             paint.typeface = Typeface.DEFAULT_BOLD
             paint.textAlign = Paint.Align.CENTER

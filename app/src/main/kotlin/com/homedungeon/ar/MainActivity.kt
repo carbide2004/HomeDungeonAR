@@ -45,6 +45,8 @@ import com.homedungeon.core.DetectorMath
 import com.homedungeon.core.SpatialAudioMath
 import com.homedungeon.core.Vector3
 import com.homedungeon.core.WallAnomalyStateMachine
+import com.homedungeon.core.WallPoseDerivation
+import com.google.ar.core.Pose
 import java.util.concurrent.ArrayBlockingQueue
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -311,30 +313,68 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             lastFpsTimestamp = now
         }
 
-        // Handle Tap for Hit Testing (Anchor Placement)
+        // Handle Tap for Hit Testing (基于地面反推垂直墙面)
         val tap = queuedSingleTaps.poll()
         if (tap != null && trackingState == TrackingState.TRACKING) {
-            val hitResults = frame.hitTest(tap.x, tap.y)
-            for (hit in hitResults) {
-                val trackable = hit.trackable
-                val isValidHit = when (trackable) {
-                    is Plane -> trackable.isPoseInPolygon(hit.hitPose) || trackable.isPoseInExtents(hit.hitPose)
-                    is Point -> trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
-                    is InstantPlacementPoint -> true
-                    else -> false
-                }
+            val allPlanes = currentSession.getAllTrackables(Plane::class.java)
+            val floorPlane = allPlanes.firstOrNull {
+                it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.trackingState == TrackingState.TRACKING
+            }
 
-                if (isValidHit) {
-                    val newAnchor = hit.createAnchor()
-                    synchronized(anchors) {
-                        anchors.add(newAnchor)
+            val dispPose = camera.displayOrientedPose
+            val camPos = Vector3(dispPose.tx(), dispPose.ty(), dispPose.tz())
+            val zAxis = dispPose.zAxis
+            val camFwd = Vector3(-zAxis[0], -zAxis[1], -zAxis[2])
+
+            var createdAnchor: Anchor? = null
+
+            // 优先方案: 基于已锁定的物理地面方程，通过视线直接构造绝对垂直的墙面位姿
+            if (floorPlane != null) {
+                val floorY = floorPlane.centerPose.ty()
+                val derived = WallPoseDerivation.deriveFromFloorIntersection(
+                    floorY = floorY,
+                    camPos = camPos,
+                    camForwardRay = camFwd,
+                    targetHeightAboveFloor = 1.15f
+                )
+
+                if (derived != null) {
+                    val halfAngleRad = (derived.yawAngleDegrees * 0.5f) * (Math.PI.toFloat() / 180f)
+                    val qy = kotlin.math.sin(halfAngleRad)
+                    val qw = kotlin.math.cos(halfAngleRad)
+                    val wallPose = Pose.makeTranslation(derived.position.x, derived.position.y, derived.position.z)
+                        .compose(Pose.makeRotation(0f, qy, 0f, qw))
+
+                    createdAnchor = currentSession.createAnchor(wallPose)
+                }
+            }
+
+            // 降级后备: 若暂未识别出地面，则回退到常规平面点击
+            if (createdAnchor == null) {
+                val hitResults = frame.hitTest(tap.x, tap.y)
+                for (hit in hitResults) {
+                    val trackable = hit.trackable
+                    val isValidHit = when (trackable) {
+                        is Plane -> trackable.isPoseInPolygon(hit.hitPose) || trackable.isPoseInExtents(hit.hitPose)
+                        is Point -> trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
+                        is InstantPlacementPoint -> true
+                        else -> false
                     }
-                    anomalyStateMachine.onAnchorPlaced()
-                    hasTriggeredRevealHaptic = false
-                    runOnUiThread {
-                        hapticDriver.triggerOneShotTap(binding.root)
+                    if (isValidHit) {
+                        createdAnchor = hit.createAnchor()
+                        break
                     }
-                    break
+                }
+            }
+
+            if (createdAnchor != null) {
+                synchronized(anchors) {
+                    anchors.add(createdAnchor)
+                }
+                anomalyStateMachine.onAnchorPlaced()
+                hasTriggeredRevealHaptic = false
+                runOnUiThread {
+                    hapticDriver.triggerOneShotTap(binding.root)
                 }
             }
         }
@@ -469,7 +509,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
             if (trackingState == TrackingState.TRACKING) {
                 val stagePrompt = when (anomalyStateMachine.currentStage) {
-                    AnomalyStage.IDLE -> "轻触墙面部署 [S4 空白墙] 异常点"
+                    AnomalyStage.IDLE -> if (floorCount > 0) "准心对准墙根线点击：立起 [S4 垂直墙面]" else "正在锁定地面... (平移手机扫描地面)"
                     AnomalyStage.CALIBRATED_SEARCHING -> "已标定：请将镜头对准该墙面开始观测..."
                     AnomalyStage.PHASE1_VINES_FADING_IN -> "墙纸正在渗出... 请保持注视"
                     AnomalyStage.PHASE1_STABLE -> "听！墙根异响正移向右后方... 转开视线寻找声源"
