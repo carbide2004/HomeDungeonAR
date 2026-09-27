@@ -63,78 +63,78 @@ Sep 26, 2026 · @Adscn
 设实体在物理地面上的坐标为 \(\mathbf{p}_{entity} = (x_e, y_{floor}, z_e)\)。
 
 相对位移向量及距离：
-\(
+$$
 \mathbf{d} = \mathbf{p}_{entity} - \mathbf{p}_{cam}, \quad r = \|\mathbf{d}\|
-\)
+$$
 
 相对方向单位向量：
-\(
+$$
 \hat{d} = \frac{\mathbf{d}}{r}
-\)
+$$
 
 视线对齐余弦值：
-\(
+$$
 \cos\theta = \max\left(0,\ \hat{f} \cdot \hat{d}\right)
-\)
+$$
 
-最终探测震颤强度 \(I \in [0, 1]\)：
-\(
+最终探测震颤强度 $I \in [0, 1]$：
+$$
 I = \left(\cos\theta\right)^{k} \cdot \frac{1}{1 + \beta \cdot r^2}
-\)
-- \(k\) 为指向性收束指数（默认 \(k = 2.0\)，阻断非正对方向信号）。
-- \(\beta\) 为距离衰减系数（默认 \(\beta = 0.6\)）。
+$$
+- $k$ 为指向性收束指数（默认 $k = 2.0$，阻断非正对方向信号）。
+- $\beta$ 为距离衰减系数（默认 $\beta = 0.6$）。
 
 ### 2. 等功率立体声平移与声影衰减
 
-利用 `displayOrientedPose` 提取当前竖屏屏幕水平右手侧单位向量 \(\hat{r}\)。
+利用 `displayOrientedPose` 提取当前竖屏屏幕水平右手侧单位向量 $\hat{r}$。
 
 将位移向量分解至听者平面：
-\(
+$$
 d_{front} = \mathbf{d} \cdot \hat{f}, \quad d_{right} = \mathbf{d} \cdot \hat{r}
-\)
+$$
 
 水平方位角：
-\(
+$$
 \theta = \operatorname{atan2}(d_{right}, d_{front}) \in [-\pi, \pi]
-\)
+$$
 
 等功率声像增益分配：
-\(
+$$
 p = \frac{\sin\theta + 1}{2} \in [0, 1]
-\)
-\(
+$$
+$$
 g_L = \cos\left(\frac{\pi}{2} \cdot p\right), \quad g_R = \sin\left(\frac{\pi}{2} \cdot p\right)
-\)
+$$
 
 后脑声影遮蔽因子：
-\(
+$$
 \eta_{rear} = \begin{cases} 0.78 & d_{front} < 0 \\ 1.00 & d_{front} \ge 0 \end{cases}
-\)
+$$
 
 最终左右耳输出音量：
-\(
+$$
 V_L = \left(\frac{1}{1 + 0.8 \cdot r} \cdot g_L \cdot \eta_{rear}\right), \quad V_R = \left(\frac{1}{1 + 0.8 \cdot r} \cdot g_R \cdot \eta_{rear}\right)
-\)
+$$
 
 ### 3. 多边形围困收容几何判定
 
-玩家在地面成功插下 3 根锚栓，世界地面坐标分别为 \(\mathbf{A}, \mathbf{B}, \mathbf{C}\)。
-判断实体水平位置 \(\mathbf{P}(x_e, z_e)\) 是否严格位于三角形 \(\triangle ABC\) 内部（二维叉积同号测试）：
+玩家在地面成功插下 3 根锚栓，世界地面坐标分别为 $\mathbf{A}, \mathbf{B}, \mathbf{C}$。
+判断实体水平位置 $\mathbf{P}(x_e, z_e)$ 是否严格位于三角形 $\triangle ABC$ 内部（二维叉积同号测试）：
 
-\(
+$$
 c_1 = (\mathbf{B}_x - \mathbf{A}_x)(\mathbf{P}_z - \mathbf{A}_z) - (\mathbf{B}_z - \mathbf{A}_z)(\mathbf{P}_x - \mathbf{A}_x)
-\)
-\(
+$$
+$$
 c_2 = (\mathbf{C}_x - \mathbf{B}_x)(\mathbf{P}_z - \mathbf{B}_z) - (\mathbf{C}_z - \mathbf{B}_z)(\mathbf{P}_x - \mathbf{B}_x)
-\)
-\(
+$$
+$$
 c_3 = (\mathbf{A}_x - \mathbf{C}_x)(\mathbf{P}_z - \mathbf{C}_z) - (\mathbf{A}_z - \mathbf{C}_z)(\mathbf{P}_x - \mathbf{C}_x)
-\)
+$$
 
 收容成功充要条件：
-\(
+$$
 (c_1 \ge 0 \land c_2 \ge 0 \land c_3 \ge 0) \lor (c_1 \le 0 \land c_2 \le 0 \land c_3 \le 0)
-\)
+$$
 
 ## 首发收容实体档案：《盲爪》（The Blind Crawler）
 
