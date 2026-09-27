@@ -15,7 +15,6 @@ class PlaneVisualizer {
     private var uMvpMatrix = 0
     private var uColor = 0
     private var aPosition = 0
-    private var aTexCoord = 0
 
     // 贴地准星 (Ground Reticle) 渲染管线
     private var reticleProgram = 0
@@ -34,7 +33,6 @@ class PlaneVisualizer {
         val vertices = ArrayList<Float>()
         val indices = ArrayList<Short>()
 
-        // 顶点 0: 圆心
         vertices.add(0f); vertices.add(0.003f); vertices.add(0f)
 
         for (i in 0..segments) {
@@ -42,7 +40,7 @@ class PlaneVisualizer {
             val x = radius * kotlin.math.cos(angle)
             val z = radius * kotlin.math.sin(angle)
             vertices.add(x)
-            vertices.add(0.003f) // 贴地浮起 3mm
+            vertices.add(0.003f)
             vertices.add(z)
 
             if (i > 0) {
@@ -73,7 +71,6 @@ class PlaneVisualizer {
     }
 
     fun createOnGlThread() {
-        // 1. 官方级带网格纹理与边缘羽化的平面 Shader
         val vs = """
             uniform mat4 u_MvpMatrix;
             attribute vec4 a_Position;
@@ -84,22 +81,22 @@ class PlaneVisualizer {
             }
         """.trimIndent()
 
+        // 兼容所有 Android OpenGL ES 2.0 GPU，不依赖任何扩展指令
         val fs = """
             precision mediump float;
             varying vec2 v_LocalPos;
             uniform vec4 u_Color;
             void main() {
-                // 工业级 Grid & Soft Edge: 在局部空间每隔 0.2m 生成细腻坐标网线
-                vec2 grid = abs(fract(v_LocalPos * 5.0 - 0.5) - 0.5) / fwidth(v_LocalPos * 5.0);
-                float line = min(grid.x, grid.y);
-                float c = 1.0 - min(line, 1.0);
+                // 经典三角波生成细腻网格线 (每隔 0.2m 一条网线)
+                vec2 grid = abs(sin(v_LocalPos * 15.707963));
+                float line = step(0.92, max(grid.x, grid.y));
                 
-                // 距离平面原点径向渐变衰减 (消除任何生硬边界产生的翘起视错觉)
+                // 柔和边缘羽化渐隐
                 float dist = length(v_LocalPos);
-                float alpha = smoothstep(1.8, 0.2, dist) * u_Color.a;
+                float alpha = (1.0 - smoothstep(0.4, 2.0, dist)) * u_Color.a;
                 
-                vec3 finalCol = mix(u_Color.rgb * 0.7, vec3(0.0, 1.0, 0.6), c * 0.75);
-                gl_FragColor = vec4(finalCol, alpha * (0.35 + c * 0.65));
+                vec3 finalCol = mix(u_Color.rgb * 0.7, vec3(0.0, 1.0, 0.6), line * 0.85);
+                gl_FragColor = vec4(finalCol, alpha * (0.35 + line * 0.65));
             }
         """.trimIndent()
 
@@ -133,7 +130,6 @@ class PlaneVisualizer {
             uniform vec4 u_Color;
             void main() {
                 float dist = length(v_Pos) / 0.28;
-                // 空心光环效果
                 float ring = smoothstep(0.70, 0.88, dist) - smoothstep(0.96, 1.0, dist);
                 gl_FragColor = vec4(u_Color.rgb, ring * u_Color.a);
             }
@@ -153,9 +149,6 @@ class PlaneVisualizer {
         reticlePos = GLES20.glGetAttribLocation(reticleProgram, "a_Position")
     }
 
-    /**
-     * 按照 Google 官方规范绘制主地面 (严格保留 centerPose 本地参考系，结合羽化着色)
-     */
     fun drawMainFloor(
         mainFloor: Plane?,
         viewMatrix: FloatArray,
@@ -178,7 +171,6 @@ class PlaneVisualizer {
         val mvMatrix = FloatArray(16)
         val mvpMatrix = FloatArray(16)
 
-        // 严格遵循官方实现：使用 centerPose.toMatrix 确保局部点阵与相机世界严格对齐
         mainFloor.centerPose.toMatrix(modelMatrix, 0)
         Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, modelMatrix, 0)
         Matrix.multiplyMM(mvpMatrix, 0, projMatrix, 0, mvMatrix, 0)
@@ -202,7 +194,6 @@ class PlaneVisualizer {
         GLES20.glVertexAttribPointer(aPosition, 3, GLES20.GL_FLOAT, false, 0, vertexBuffer)
         GLES20.glEnableVertexAttribArray(aPosition)
 
-        // 柔和羽化半透明绿
         GLES20.glUniform4f(uColor, 0.0f, 0.85f, 0.45f, 0.35f)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, pointCount)
 
@@ -211,9 +202,6 @@ class PlaneVisualizer {
         GLES20.glDisable(GLES20.GL_BLEND)
     }
 
-    /**
-     * 行业标准：在当前准心命中的物理地面上渲染贴地呼吸光环
-     */
     fun drawGroundReticle(
         reticleMatrix: FloatArray,
         viewMatrix: FloatArray,
