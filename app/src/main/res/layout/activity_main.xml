@@ -9,6 +9,12 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- 3D 激光测距点阵 HUD 覆盖层 -->
+    <com.homedungeon.ar.rendering.DistanceMatrixOverlayView
+        android:id="@+id/distanceMatrixOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
     <!-- Center Reticle (瞄准准星) -->
     <ImageView
         android:id="@+id/ivReticle"

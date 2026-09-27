@@ -44,6 +44,8 @@ import com.homedungeon.ar.rendering.WallDecalRenderer
 import com.homedungeon.core.BlindCrawlerEntity
 import com.homedungeon.ar.rendering.GroundReticleRenderer
 import com.homedungeon.core.GroundPhysicsEngine
+import com.homedungeon.core.MatrixRaycastEngine
+import com.homedungeon.core.RayDistancePoint
 import com.homedungeon.core.EntityState
 import com.homedungeon.core.DetectorMath
 import com.homedungeon.core.SpatialAudioMath
@@ -75,8 +77,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var currentK = 2.0f
     private var terminalFilterEnabled = true
     private var showDebugMarker = true
-    private var virtualFloorY: Float = -1.35f // 默认离地基准高度 1.35m
-    private var isFloorLocked = false
+    private var calibratedFloorY: Float? = null
     @Volatile
     private var pendingCalibrateFloor = false
     private var currentGroundTargetPos: Vector3? = null
@@ -318,25 +319,67 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val camFwd = Vector3(-viewMatrix[2], -viewMatrix[6], -viewMatrix[10]).normalized()
         // 屏幕右侧单位向量：
         val camRight = Vector3(viewMatrix[0], viewMatrix[4], viewMatrix[8]).normalized()
+        // 屏幕上侧单位向量：
+        val camUp = Vector3(viewMatrix[1], viewMatrix[5], viewMatrix[9]).normalized()
 
-        // 核心：利用物理重力反投影计算准星投向物理地表的绝对交点
-        // 彻底丢弃单目 ARCore 不可靠的平面拟合，由重力先验保证绝对水平、绝不倾斜
-        currentGroundTargetPos = GroundPhysicsEngine.projectReticleToAbsoluteFloor(
-            cameraWorldPos = camPos,
-            cameraForwardRay = camFwd,
-            standingEyeHeight = if (isFloorLocked) (camPos.y - virtualFloorY) else 1.35f
-        )
+        // 核心：寻找最稳的实际物理地坪 Y 轴真值
+        // 1. 如果玩家点击锁定过，使用锁定值；
+        // 2. 否则，从 ARCore 当前跟踪到的所有水平地面中提取最低的稳定平面作为 Y 轴基准；
+        // 3. 如果尚未检测到任何地面，绝不硬编码盲猜高度，而是保持未就绪状态 (null)
+        if (calibratedFloorY == null) {
+            val allPlanes = currentSession.getAllTrackables(Plane::class.java)
+            val detectedFloors = allPlanes.filter { 
+                it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.trackingState == TrackingState.TRACKING 
+            }
+            if (detectedFloors.isNotEmpty()) {
+                calibratedFloorY = detectedFloors.minOf { it.centerPose.ty() }
+            }
+        }
 
-        // 按钮点击处理: 锁定当前准心投射到的物理地面高度
+        val activeFloorY = calibratedFloorY
+
+        if (activeFloorY != null) {
+            // 计算 4x3 全屏激光测距点阵并传给 HUD 绘制
+            val raycastGrid = MatrixRaycastEngine.computeGridRaycasts(
+                camPos = camPos,
+                camForward = camFwd,
+                camRight = camRight,
+                camUp = camUp,
+                floorY = activeFloorY,
+                gridRows = 4,
+                gridCols = 3,
+                aspect = (viewportWidth.toFloat() / viewportHeight.toFloat())
+            )
+            runOnUiThread {
+                binding.distanceMatrixOverlay.updatePoints(raycastGrid)
+            }
+
+            currentGroundTargetPos = GroundPhysicsEngine.projectReticleToFloorY(
+                cameraWorldPos = camPos,
+                cameraForwardRay = camFwd,
+                floorY = activeFloorY
+            )
+        } else {
+            runOnUiThread {
+                binding.distanceMatrixOverlay.updatePoints(emptyList())
+            }
+            currentGroundTargetPos = null
+        }
+
+        // 按钮点击处理: 通过当前准心射线的真实地面交点精准锁定地表，绝不假设蹲下或站立高度！
         if (pendingCalibrateFloor && trackingState == TrackingState.TRACKING) {
             pendingCalibrateFloor = false
-            currentGroundTargetPos?.let { target ->
-                virtualFloorY = target.y
-                isFloorLocked = true
+            val target = currentGroundTargetPos
+            if (target != null) {
+                calibratedFloorY = target.y
                 runOnUiThread {
                     hapticDriver.triggerOneShotTap(binding.root)
-                    Toast.makeText(this, "物理地面高度已锁定 (Y=${"%.2f".format(virtualFloorY)}m)", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "物理地板高度已锁定: ${"%.2f".format(calibratedFloorY)}m", Toast.LENGTH_SHORT).show()
                     binding.btnCalibrateFloor.text = "地面: 已锁定"
+                }
+            } else {
+                runOnUiThread {
+                    Toast.makeText(this, "未检测到地面，请先平移手机扫描地砖", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -454,8 +497,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 binding.tvStatus.text = "追踪丢失 (尝试面向光线充足区域)"
             }
 
-            val floorStatus = if (isFloorLocked) "物理锁定(Y=${"%.2f".format(virtualFloorY)}m)" else "自适应估计(H=1.35m)"
-            binding.tvInfo.text = "重力地平: $floorStatus | 帧率: $currentFps FPS"
+            val floorStatus = if (calibratedFloorY != null) "物理锁定(Y=${"%.2f".format(calibratedFloorY)}m)" else "未锁定"
+            val eyeHeight = if (calibratedFloorY != null) (camPos.y - calibratedFloorY!!) else 0f
+            binding.tvInfo.text = "对地高度: ${"%.2f".format(eyeHeight)}m | $floorStatus | 帧率: $currentFps FPS"
 
             if (crawlerEntity.state != EntityState.IDLE && targetDistance >= 0f) {
                 val alignPct = (targetCosTheta.coerceAtLeast(0f) * 100).toInt()
