@@ -18,6 +18,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "HomeDungeonAR"
+rootProject.name = "MemePatrol"
 include(":app")
 include(":core-logic")
