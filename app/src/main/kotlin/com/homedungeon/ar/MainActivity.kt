@@ -15,6 +15,7 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
 import android.widget.Toast
+import android.opengl.Matrix
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -40,7 +41,8 @@ import com.homedungeon.ar.rendering.BackgroundRenderer
 import com.homedungeon.ar.rendering.CubeRenderer
 import com.homedungeon.ar.rendering.PlaneVisualizer
 import com.homedungeon.ar.rendering.WallDecalRenderer
-import com.homedungeon.core.AnomalyStage
+import com.homedungeon.core.BlindCrawlerEntity
+import com.homedungeon.core.EntityState
 import com.homedungeon.core.DetectorMath
 import com.homedungeon.core.SpatialAudioMath
 import com.homedungeon.core.Vector3
@@ -63,18 +65,17 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private val backgroundRenderer = BackgroundRenderer()
     private val cubeRenderer = CubeRenderer()
-    private val wallDecalRenderer = WallDecalRenderer()
     private val planeVisualizer = PlaneVisualizer()
-    private val anomalyStateMachine = WallAnomalyStateMachine()
+    private val crawlerEntity = BlindCrawlerEntity()
     private lateinit var hapticDriver: DetectorHapticDriver
     private lateinit var audioEngine: SpatialAudioEngine
 
     private var currentK = 2.0f
     private var terminalFilterEnabled = true
+    private var showDebugMarker = true
     private var viewportWidth = 1080
     private var viewportHeight = 2400
     private var lastFrameTimestamp = System.currentTimeMillis()
-    private var hasTriggeredRevealHaptic = false
 
     private val anchors = ArrayList<Anchor>()
     private val queuedSingleTaps = ArrayBlockingQueue<MotionEvent>(16)
@@ -110,10 +111,10 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         binding.btnToggleFilter.setOnClickListener {
             terminalFilterEnabled = !terminalFilterEnabled
             if (terminalFilterEnabled) {
-                binding.btnToggleFilter.text = "滤镜: 里侧终端"
+                binding.btnToggleFilter.text = "滤镜: 终端视界"
                 binding.btnToggleFilter.backgroundTintList = ContextCompat.getColorStateList(this, R.color.terminal_green)
                 binding.btnToggleFilter.setTextColor(ContextCompat.getColor(this, R.color.black))
-                Toast.makeText(this, "终端里侧滤镜已激活", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "终端视界滤镜已激活", Toast.LENGTH_SHORT).show()
             } else {
                 binding.btnToggleFilter.text = "滤镜: 原始直通"
                 binding.btnToggleFilter.backgroundTintList = ContextCompat.getColorStateList(this, R.color.terminal_dark)
@@ -122,28 +123,30 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             }
         }
 
-        binding.btnToggleAudio.setOnClickListener {
-            val newTrack = audioEngine.toggleTrack()
-            binding.btnToggleAudio.text = "🔊 ${newTrack.displayName}"
-            Toast.makeText(this, "声源切换为: ${newTrack.displayName}", Toast.LENGTH_SHORT).show()
+        binding.btnToggleDebugMarker.setOnClickListener {
+            showDebugMarker = !showDebugMarker
+            if (showDebugMarker) {
+                binding.btnToggleDebugMarker.text = "调试标点: 开"
+                binding.btnToggleDebugMarker.backgroundTintList = ContextCompat.getColorStateList(this, R.color.terminal_dark)
+                binding.btnToggleDebugMarker.setTextColor(ContextCompat.getColor(this, R.color.terminal_green))
+                Toast.makeText(this, "已开启实体碰撞标点 (可视)", Toast.LENGTH_SHORT).show()
+            } else {
+                binding.btnToggleDebugMarker.text = "调试标点: 隐形"
+                binding.btnToggleDebugMarker.backgroundTintList = ContextCompat.getColorStateList(this, R.color.terminal_green)
+                binding.btnToggleDebugMarker.setTextColor(ContextCompat.getColor(this, R.color.black))
+                Toast.makeText(this, "已开启完全隐形潜行模式", Toast.LENGTH_SHORT).show()
+            }
         }
 
-        binding.btnGrantPermission.setOnClickListener {
-            requestCameraPermission()
-        }
-
-        binding.btnClearAnchors.setOnClickListener {
+        binding.btnRespawnEntity.setOnClickListener {
+            crawlerEntity.reset()
             synchronized(anchors) {
-                for (anchor in anchors) {
-                    anchor.detach()
-                }
+                for (a in anchors) a.detach()
                 anchors.clear()
             }
-            anomalyStateMachine.reset()
-            hasTriggeredRevealHaptic = false
             runOnUiThread {
-                binding.tvInfo.text = "平面: -- | 锚点: 0 | 帧率: $currentFps FPS"
-                Toast.makeText(this, "所有空间锚点已清除", Toast.LENGTH_SHORT).show()
+                binding.tvEntityState.text = "实体状态: 未初始化 (请重新轻触地面生成)"
+                Toast.makeText(this, "异常实体已驱逐，请重新投放", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -272,7 +275,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         GLES20.glClearColor(0.0f, 0.0f, 0.0f, 1.0f)
         backgroundRenderer.createOnGlThread()
         cubeRenderer.createOnGlThread()
-        wallDecalRenderer.createOnGlThread()
         planeVisualizer.createOnGlThread()
         session?.setCameraTextureName(backgroundRenderer.textureId)
     }
@@ -313,76 +315,27 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             lastFpsTimestamp = now
         }
 
-        // Handle Tap for Hit Testing (基于地面反推垂直墙面)
+        // Handle Tap for Hit Testing (在地面投放实体生成点)
         val tap = queuedSingleTaps.poll()
         if (tap != null && trackingState == TrackingState.TRACKING) {
-            val allPlanes = currentSession.getAllTrackables(Plane::class.java)
-            val floorPlane = allPlanes.firstOrNull {
-                it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.trackingState == TrackingState.TRACKING
-            }
-
-            val dispPose = camera.displayOrientedPose
-            val camPos = Vector3(dispPose.tx(), dispPose.ty(), dispPose.tz())
-            val zAxis = dispPose.zAxis
-            val camFwd = Vector3(-zAxis[0], -zAxis[1], -zAxis[2])
-
-            var createdAnchor: Anchor? = null
-
-            // 优先方案: 基于已锁定的物理地面方程，通过视线直接构造绝对垂直的墙面位姿
-            if (floorPlane != null) {
-                val floorY = floorPlane.centerPose.ty()
-                val derived = WallPoseDerivation.deriveFromFloorIntersection(
-                    floorY = floorY,
-                    camPos = camPos,
-                    camForwardRay = camFwd,
-                    targetHeightAboveFloor = 1.15f
-                )
-
-                if (derived != null) {
-                    val halfAngleRad = (derived.yawAngleDegrees * 0.5f) * (Math.PI.toFloat() / 180f)
-                    val qy = kotlin.math.sin(halfAngleRad)
-                    val qw = kotlin.math.cos(halfAngleRad)
-                    val wallPose = Pose.makeTranslation(derived.position.x, derived.position.y, derived.position.z)
-                        .compose(Pose.makeRotation(0f, qy, 0f, qw))
-
-                    createdAnchor = currentSession.createAnchor(wallPose)
-                }
-            }
-
-            // 降级后备: 若暂未识别出地面，则回退到常规平面点击
-            if (createdAnchor == null) {
-                val hitResults = frame.hitTest(tap.x, tap.y)
-                for (hit in hitResults) {
-                    val trackable = hit.trackable
-                    val isValidHit = when (trackable) {
-                        is Plane -> trackable.isPoseInPolygon(hit.hitPose) || trackable.isPoseInExtents(hit.hitPose)
-                        is Point -> trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
-                        is InstantPlacementPoint -> true
-                        else -> false
-                    }
-                    if (isValidHit) {
-                        createdAnchor = hit.createAnchor()
-                        break
-                    }
-                }
-            }
-
-            if (createdAnchor != null) {
-                synchronized(anchors) {
-                    anchors.add(createdAnchor)
-                }
-                anomalyStateMachine.onAnchorPlaced()
-                hasTriggeredRevealHaptic = false
-                runOnUiThread {
+            val hitResults = frame.hitTest(tap.x, tap.y)
+            for (hit in hitResults) {
+                val trackable = hit.trackable
+                if (trackable is Plane && trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING) {
+                    val hitPose = hit.hitPose
+                    val groundPos = Vector3(hitPose.tx(), hitPose.ty(), hitPose.tz())
+                    
+                    crawlerEntity.spawnAt(groundPos)
                     hapticDriver.triggerOneShotTap(binding.root)
+                    break
                 }
             }
         }
 
-        // 3. Calculate Haptic Detector & Spatial Audio feedback based on nearest anchor
+        // 3. 驱动实体 AI 并在世界坐标系计算声震物理量
         var maxIntensity = 0.0f
-        var nearestDistance = -1.0f
-        var nearestCosTheta = -1.0f
+        var targetDistance = -1.0f
+        var targetCosTheta = -1.0f
 
         val dispPose = camera.displayOrientedPose
         val camPos = Vector3(dispPose.tx(), dispPose.ty(), dispPose.tz())
@@ -393,50 +346,27 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
         var spatialAudioResult = com.homedungeon.core.SpatialAudioResult(0f, 0f, -1f, 0f)
 
-        // 状态机更新时间步长
         val nowMs = System.currentTimeMillis()
         val deltaSeconds = (nowMs - lastFrameTimestamp).coerceIn(1L, 200L) / 1000.0f
         lastFrameTimestamp = nowMs
 
-        synchronized(anchors) {
-            for (anchor in anchors) {
-                if (anchor.trackingState != TrackingState.STOPPED) {
-                    val anchorPose = anchor.pose
-                    val targetPos = Vector3(anchorPose.tx(), anchorPose.ty(), anchorPose.tz())
-                    val (intensity, dist, cos) = DetectorMath.calculateIntensity(
-                        camPos, camFwd, targetPos, k = currentK
-                    )
-                    if (intensity > maxIntensity || nearestDistance < 0f) {
-                        maxIntensity = intensity
-                        nearestDistance = dist
-                        nearestCosTheta = cos
+        if (crawlerEntity.state != EntityState.IDLE) {
+            val entityPos = crawlerEntity.position
+            val (intensity, dist, cos) = DetectorMath.calculateIntensity(
+                camPos, camFwd, entityPos, k = currentK
+            )
+            maxIntensity = intensity
+            targetDistance = dist
+            targetCosTheta = cos
 
-                        // 判断是否正对目标墙面 (视场角 30° 锥体内, cos >= 0.866)
-                        val isLookingAtWall = (cos >= 0.866f && dist > 0f)
-                        anomalyStateMachine.update(isLookingAtWall, deltaSeconds)
+            // 实体 AI 更新: 如果玩家准星对准实体 (cos >= 0.88 且 dist <= 3.5m)，实体触发 ALERT 警觉并停步
+            val isGazed = (cos >= 0.88f && dist in 0.2f..3.5f)
+            crawlerEntity.update(deltaSeconds, isGazed)
 
-                        // 阶段 2 (转开视线): 声音在耳机里向右后方墙根爬行位移，诱导并恐吓玩家！
-                        val audioTargetPos = if (anomalyStateMachine.currentStage == AnomalyStage.PHASE2_LOOKING_AWAY) {
-                            val crawlProgress = (anomalyStateMachine.lookAwayDuration / 2.0f).coerceIn(0f, 1f)
-                            targetPos - (camRight * (crawlProgress * 2.2f))
-                        } else {
-                            targetPos
-                        }
-
-                        // 阶段 3 (转回头直视反转): 触发一次惊吓性强顿挫触觉脉冲
-                        if (anomalyStateMachine.currentStage == AnomalyStage.PHASE3_FACE_REVEAL && !hasTriggeredRevealHaptic) {
-                            hasTriggeredRevealHaptic = true
-                            runOnUiThread {
-                                hapticDriver.triggerOneShotTap(binding.root)
-                            }
-                        }
-
-                        spatialAudioResult = SpatialAudioMath.calculateSpatialGain(
-                            camPos, camFwd, camRight, audioTargetPos
-                        )
-                    }
-                }
-            }
+            // 计算该实体的立体声像
+            spatialAudioResult = SpatialAudioMath.calculateSpatialGain(
+                camPos, camFwd, camRight, crawlerEntity.position
+            )
         }
 
         // 1. Draw camera feed background with Terminal Vision Shader
@@ -452,44 +382,23 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         camera.getProjectionMatrix(projMatrix, 0, 0.05f, 100.0f)
         camera.getViewMatrix(viewMatrix, 0)
 
-        // 2. 渲染已识别的空间平面多边形 (地面绿色、墙面青蓝色)
+        // 2. 渲染已识别的水平地面多边形 (绿色)
         if (trackingState == TrackingState.TRACKING) {
             val allPlanes = currentSession.getAllTrackables(Plane::class.java)
             planeVisualizer.drawPlanes(allPlanes, viewMatrix, projMatrix)
         }
 
-        // 3. Render Placed 3D Anchors & Wall Decals
-        if (trackingState == TrackingState.TRACKING) {
-            synchronized(anchors) {
-                val anchorIterator = anchors.iterator()
-                while (anchorIterator.hasNext()) {
-                    val anchor = anchorIterator.next()
-                    if (anchor.trackingState == TrackingState.TRACKING) {
-                        val modelMatrix = FloatArray(16)
-                        anchor.pose.toMatrix(modelMatrix, 0)
-
-                        // 绘制贴墙怪谈黄色墙纸 (根据状态机控制淡入度与人脸异变因子)
-                        wallDecalRenderer.draw(
-                            modelMatrix = modelMatrix,
-                            viewMatrix = viewMatrix,
-                            projMatrix = projMatrix,
-                            alpha = anomalyStateMachine.surfaceAlpha,
-                            revealFactor = anomalyStateMachine.revealFactor
-                        )
-
-                        // 仅在墙纸未完全显现时保留线框基准
-                        if (anomalyStateMachine.surfaceAlpha < 0.9f) {
-                            cubeRenderer.draw(modelMatrix, viewMatrix, projMatrix)
-                        }
-                    } else if (anchor.trackingState == TrackingState.STOPPED) {
-                        anchorIterator.remove()
-                    }
-                }
-            }
+        // 3. 渲染实体调试位置标点 (仅在开启 showDebugMarker 且实体激活时绘制紧凑红色微小线框，验证其实体走位)
+        if (trackingState == TrackingState.TRACKING && crawlerEntity.state != EntityState.IDLE && showDebugMarker) {
+            val modelMatrix = FloatArray(16)
+            Matrix.setIdentityM(modelMatrix, 0)
+            val ePos = crawlerEntity.position
+            Matrix.translateM(modelMatrix, 0, ePos.x, ePos.y, ePos.z)
+            cubeRenderer.draw(modelMatrix, viewMatrix, projMatrix)
         }
 
         // Update Spatial Audio Engine
-        if (trackingState == TrackingState.TRACKING && nearestDistance >= 0f) {
+        if (trackingState == TrackingState.TRACKING && targetDistance >= 0f) {
             audioEngine.updateSpatialGain(spatialAudioResult.leftVolume, spatialAudioResult.rightVolume)
         } else {
             audioEngine.updateSpatialGain(0f, 0f)
@@ -498,8 +407,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         // 4. Update Diagnostics UI & Haptics on main thread
         val allPlanes = currentSession.getAllTrackables(Plane::class.java)
         val floorCount = allPlanes.count { it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.trackingState == TrackingState.TRACKING }
-        val wallCount = allPlanes.count { it.type == Plane.Type.VERTICAL && it.trackingState == TrackingState.TRACKING }
-        val anchorCount = synchronized(anchors) { anchors.size }
 
         runOnUiThread {
             // Trigger dynamic haptic feedback on UI thread via View pipeline
@@ -508,32 +415,32 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             }
 
             if (trackingState == TrackingState.TRACKING) {
-                val stagePrompt = when (anomalyStateMachine.currentStage) {
-                    AnomalyStage.IDLE -> if (floorCount > 0) "准心对准墙根线点击：立起 [S4 垂直墙面]" else "正在锁定地面... (平移手机扫描地面)"
-                    AnomalyStage.CALIBRATED_SEARCHING -> "已标定：请将镜头对准该墙面开始观测..."
-                    AnomalyStage.PHASE1_VINES_FADING_IN -> "墙纸正在渗出... 请保持注视"
-                    AnomalyStage.PHASE1_STABLE -> "听！墙根异响正移向右后方... 转开视线寻找声源"
-                    AnomalyStage.PHASE2_LOOKING_AWAY -> "声音已移至你背后... (墙体正在暗中畸变)"
-                    AnomalyStage.PHASE3_FACE_REVEAL -> "【高危】它们全部转过脸来了！“到墙里来”！"
+                val stagePrompt = when (crawlerEntity.state) {
+                    EntityState.IDLE -> if (floorCount > 0) "准心对准地面点击：投放 [SCP-742-J 盲爪]" else "正在锁定地面... (缓慢平移手机扫描地面)"
+                    EntityState.PATROL -> "实体正在地面无声潜伏游走... 戴上耳机盲扫探测"
+                    EntityState.ALERT -> "【警戒】准心已压制目标！它已停止移动"
                 }
                 binding.tvStatus.text = stagePrompt
+
+                val stateStr = when (crawlerEntity.state) {
+                    EntityState.IDLE -> "未投放"
+                    EntityState.PATROL -> "巡游潜伏中 (v ≈ 0.28m/s)"
+                    EntityState.ALERT -> "已受电磁压制 (警觉定身)"
+                }
+                binding.tvEntityState.text = "实体状态: $stateStr"
             } else if (trackingState == TrackingState.PAUSED) {
                 binding.tvStatus.text = "正在校准空间基准... (请缓慢平移手机扫描环境)"
             } else {
                 binding.tvStatus.text = "追踪丢失 (尝试面向光线充足区域)"
             }
 
-            binding.tvPose.text = String.format(
-                "坐标: X: %+.2fm | Y: %+.2fm | Z: %+.2fm",
-                dispPose.tx(), dispPose.ty(), dispPose.tz()
-            )
-            binding.tvInfo.text = "已锁定地面: $floorCount | 锚点: $anchorCount | 帧率: $currentFps FPS"
+            binding.tvInfo.text = "已锁定地面: $floorCount | 帧率: $currentFps FPS"
 
-            if (anchorCount > 0 && nearestDistance >= 0f) {
-                val alignPct = (nearestCosTheta.coerceAtLeast(0f) * 100).toInt()
+            if (crawlerEntity.state != EntityState.IDLE && targetDistance >= 0f) {
+                val alignPct = (targetCosTheta.coerceAtLeast(0f) * 100).toInt()
                 binding.tvDetectorHaptics.text = String.format(
-                    "探测: 距离 %.2fm | 对准 %d%% | 强度 I = %.2f (k=%.0f)",
-                    nearestDistance, alignPct, maxIntensity, currentK
+                    "探测: 距离 %.2fm | 锁定率 %d%% | 奇术通量 I = %.2f (k=%.0f)",
+                    targetDistance, alignPct, maxIntensity, currentK
                 )
 
                 val dirDesc = when {
@@ -548,8 +455,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     spatialAudioResult.leftVolume, spatialAudioResult.rightVolume
                 )
             } else {
-                binding.tvDetectorHaptics.text = "探测: 未部署异常源 (点击空间部署锚点)"
-                binding.tvSpatialAudio.text = "声源: [待命中] (点击墙面/地面部署发声锚点)"
+                binding.tvDetectorHaptics.text = "探测: 未投放异常实体 (点击绿网地面投放)"
+                binding.tvSpatialAudio.text = "声源: [盲爪爬行] | 待激活"
             }
         }
     }
