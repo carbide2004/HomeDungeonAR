@@ -47,7 +47,7 @@ class PlaneVisualizer {
     }
 
     /**
-     * 仅渲染通过严格过滤后的主地面平面，并支持强行修正为触地校准高度
+     * 强行将地面多边形投影到绝对重力水平面上 (剔除任何 Pitch / Roll 倾角，彻底杜绝上翘与下斜)
      */
     fun drawMainFloor(
         mainFloor: Plane?,
@@ -72,21 +72,22 @@ class PlaneVisualizer {
         val mvMatrix = FloatArray(16)
         val mvpMatrix = FloatArray(16)
 
-        mainFloor.centerPose.toMatrix(modelMatrix, 0)
-
-        // 若玩家进行了物理触地校准，将矩阵的 Y 轴平移高度严格对齐到真实触地零点
-        if (calibratedFloorY != null) {
-            modelMatrix[13] = calibratedFloorY
-        }
+        // 核心修复: 构造完全无旋转倾角的单位矩阵，仅平移到 (center.x, floorY, center.z)
+        // 彻底丢弃 ARCore 平面自身带有微小误差的 Pitch / Roll 四元数！
+        Matrix.setIdentityM(modelMatrix, 0)
+        val cPose = mainFloor.centerPose
+        val targetY = calibratedFloorY ?: cPose.ty()
+        Matrix.translateM(modelMatrix, 0, cPose.tx(), targetY, cPose.tz())
 
         Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, modelMatrix, 0)
         Matrix.multiplyMM(mvpMatrix, 0, projMatrix, 0, mvMatrix, 0)
         GLES20.glUniformMatrix4fv(uMvpMatrix, 1, false, mvpMatrix, 0)
 
+        // 顶点 Y 轴在局部坐标中严格锁死为 0 (完全平铺于水平面)，绝不容许任何微小倾斜
         val vertexArray = FloatArray(pointCount * 3)
         for (i in 0 until pointCount) {
             vertexArray[i * 3 + 0] = polygon.get(i * 2 + 0)
-            vertexArray[i * 3 + 1] = 0.002f // 略微上浮 2mm 避免与真实地板闪烁
+            vertexArray[i * 3 + 1] = 0.001f // 仅略微上浮 1mm 避免闪烁
             vertexArray[i * 3 + 2] = polygon.get(i * 2 + 1)
         }
 
