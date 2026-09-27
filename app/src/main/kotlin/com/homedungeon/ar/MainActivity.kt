@@ -42,6 +42,7 @@ import com.homedungeon.ar.rendering.CubeRenderer
 import com.homedungeon.ar.rendering.PlaneVisualizer
 import com.homedungeon.ar.rendering.WallDecalRenderer
 import com.homedungeon.core.BlindCrawlerEntity
+import com.homedungeon.core.GroundPlaneFilter
 import com.homedungeon.core.EntityState
 import com.homedungeon.core.DetectorMath
 import com.homedungeon.core.SpatialAudioMath
@@ -73,6 +74,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var currentK = 2.0f
     private var terminalFilterEnabled = true
     private var showDebugMarker = true
+    private var calibratedFloorY: Float? = null
     private var viewportWidth = 1080
     private var viewportHeight = 2400
     private var lastFrameTimestamp = System.currentTimeMillis()
@@ -108,18 +110,15 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         binding.btnK2.setOnClickListener { setK(2.0f) }
         binding.btnK4.setOnClickListener { setK(4.0f) }
 
-        binding.btnToggleFilter.setOnClickListener {
-            terminalFilterEnabled = !terminalFilterEnabled
-            if (terminalFilterEnabled) {
-                binding.btnToggleFilter.text = "滤镜: 终端视界"
-                binding.btnToggleFilter.backgroundTintList = ContextCompat.getColorStateList(this, R.color.terminal_green)
-                binding.btnToggleFilter.setTextColor(ContextCompat.getColor(this, R.color.black))
-                Toast.makeText(this, "终端视界滤镜已激活", Toast.LENGTH_SHORT).show()
-            } else {
-                binding.btnToggleFilter.text = "滤镜: 原始直通"
-                binding.btnToggleFilter.backgroundTintList = ContextCompat.getColorStateList(this, R.color.terminal_dark)
-                binding.btnToggleFilter.setTextColor(ContextCompat.getColor(this, R.color.terminal_green))
-                Toast.makeText(this, "已切换为现实相机直通模式", Toast.LENGTH_SHORT).show()
+        binding.btnCalibrateFloor.setOnClickListener {
+            // 获取当前相机的物理世界高度，将其直接锁定为物理地面零点
+            val currentFrame = session?.update()
+            val cameraPose = currentFrame?.camera?.displayOrientedPose
+            if (cameraPose != null) {
+                calibratedFloorY = cameraPose.ty()
+                hapticDriver.triggerOneShotTap(binding.root)
+                Toast.makeText(this, "地面高度零点已校准: ${"%.2f".format(calibratedFloorY)}m", Toast.LENGTH_SHORT).show()
+                binding.btnCalibrateFloor.text = "零点: ${"%.2f".format(calibratedFloorY)}m"
             }
         }
 
@@ -315,15 +314,34 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             lastFpsTimestamp = now
         }
 
+        // 获取并严苛筛选面积最大、最稳的唯一主地面
+        val allTrackables = currentSession.getAllTrackables(Plane::class.java)
+        val validFloorPlanes = allTrackables.filter { plane ->
+            plane.type == Plane.Type.HORIZONTAL_UPWARD_FACING &&
+                    plane.trackingState == TrackingState.TRACKING &&
+                    plane.subsumedBy == null &&
+                    GroundPlaneFilter.isStrictlyHorizontal(
+                        plane.centerPose.yAxis[0],
+                        plane.centerPose.yAxis[1],
+                        plane.centerPose.yAxis[2]
+                    )
+        }
+
+        // 按面积最大降序排序，只取最大单一块主地面
+        val primaryFloorPlane = validFloorPlanes.maxByOrNull {
+            GroundPlaneFilter.calculateExtentArea(it.extentX, it.extentZ)
+        }
+
         // Handle Tap for Hit Testing (在地面投放实体生成点)
         val tap = queuedSingleTaps.poll()
         if (tap != null && trackingState == TrackingState.TRACKING) {
             val hitResults = frame.hitTest(tap.x, tap.y)
             for (hit in hitResults) {
                 val trackable = hit.trackable
-                if (trackable is Plane && trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING) {
+                if (trackable == primaryFloorPlane || (primaryFloorPlane == null && trackable is Plane && trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING)) {
                     val hitPose = hit.hitPose
-                    val groundPos = Vector3(hitPose.tx(), hitPose.ty(), hitPose.tz())
+                    val groundY = calibratedFloorY ?: hitPose.ty()
+                    val groundPos = Vector3(hitPose.tx(), groundY, hitPose.tz())
                     
                     crawlerEntity.spawnAt(groundPos)
                     hapticDriver.triggerOneShotTap(binding.root)
@@ -382,10 +400,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         camera.getProjectionMatrix(projMatrix, 0, 0.05f, 100.0f)
         camera.getViewMatrix(viewMatrix, 0)
 
-        // 2. 渲染已识别的水平地面多边形 (绿色)
+        // 2. 渲染经过严苛过滤的唯一主地面 (若已触地校准，严密吸附于校准高度)
         if (trackingState == TrackingState.TRACKING) {
-            val allPlanes = currentSession.getAllTrackables(Plane::class.java)
-            planeVisualizer.drawPlanes(allPlanes, viewMatrix, projMatrix)
+            planeVisualizer.drawMainFloor(primaryFloorPlane, calibratedFloorY, viewMatrix, projMatrix)
         }
 
         // 3. 渲染实体调试位置标点 (仅在开启 showDebugMarker 且实体激活时绘制紧凑红色微小线框，验证其实体走位)
@@ -405,8 +422,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
 
         // 4. Update Diagnostics UI & Haptics on main thread
-        val allPlanes = currentSession.getAllTrackables(Plane::class.java)
-        val floorCount = allPlanes.count { it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.trackingState == TrackingState.TRACKING }
+        val floorArea = if (primaryFloorPlane != null) {
+            GroundPlaneFilter.calculateExtentArea(primaryFloorPlane.extentX, primaryFloorPlane.extentZ)
+        } else 0f
 
         runOnUiThread {
             // Trigger dynamic haptic feedback on UI thread via View pipeline
@@ -416,7 +434,15 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
             if (trackingState == TrackingState.TRACKING) {
                 val stagePrompt = when (crawlerEntity.state) {
-                    EntityState.IDLE -> if (floorCount > 0) "准心对准地面点击：投放 [SCP-742-J 盲爪]" else "正在锁定地面... (缓慢平移手机扫描地面)"
+                    EntityState.IDLE -> {
+                        if (calibratedFloorY == null) {
+                            "【步骤 1/2】请贴近真实地面，点击「🎯 贴地校准零点」"
+                        } else if (primaryFloorPlane != null) {
+                            "【步骤 2/2】基准已锁定！点击绿网地面投放 [SCP 盲爪]"
+                        } else {
+                            "基准已校准，正在锁定地面... (平移手机扫描地面)"
+                        }
+                    }
                     EntityState.PATROL -> "实体正在地面无声潜伏游走... 戴上耳机盲扫探测"
                     EntityState.ALERT -> "【警戒】准心已压制目标！它已停止移动"
                 }
@@ -434,7 +460,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 binding.tvStatus.text = "追踪丢失 (尝试面向光线充足区域)"
             }
 
-            binding.tvInfo.text = "已锁定地面: $floorCount | 帧率: $currentFps FPS"
+            val calibText = if (calibratedFloorY != null) "已物理对齐(Y=${"%.2f".format(calibratedFloorY)}m)" else "未校准"
+            binding.tvInfo.text = "主地面: ${"%.1f".format(floorArea)}㎡ ($calibText) | 帧率: $currentFps FPS"
 
             if (crawlerEntity.state != EntityState.IDLE && targetDistance >= 0f) {
                 val alignPct = (targetCosTheta.coerceAtLeast(0f) * 100).toInt()

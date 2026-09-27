@@ -7,7 +7,6 @@ import com.google.ar.core.TrackingState
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
-import java.nio.ShortBuffer
 
 class PlaneVisualizer {
 
@@ -47,11 +46,23 @@ class PlaneVisualizer {
         aPosition = GLES20.glGetAttribLocation(program, "a_Position")
     }
 
-    fun drawPlanes(
-        planes: Collection<Plane>,
+    /**
+     * 仅渲染通过严格过滤后的主地面平面，并支持强行修正为触地校准高度
+     */
+    fun drawMainFloor(
+        mainFloor: Plane?,
+        calibratedFloorY: Float?,
         viewMatrix: FloatArray,
         projMatrix: FloatArray
     ) {
+        if (mainFloor == null || mainFloor.trackingState != TrackingState.TRACKING) {
+            return
+        }
+
+        val polygon = mainFloor.polygon
+        val pointCount = polygon.limit() / 2
+        if (pointCount < 3) return
+
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glDepthMask(false)
@@ -61,67 +72,45 @@ class PlaneVisualizer {
         val mvMatrix = FloatArray(16)
         val mvpMatrix = FloatArray(16)
 
-        for (plane in planes) {
-            // 仅渲染水平地面，彻底忽略垂直墙面
-            if (plane.type == Plane.Type.VERTICAL || plane.trackingState != TrackingState.TRACKING || plane.subsumedBy != null) {
-                continue
-            }
+        mainFloor.centerPose.toMatrix(modelMatrix, 0)
 
-            val polygon = plane.polygon
-            val pointCount = polygon.limit() / 2
-            if (pointCount < 3) continue
-
-            plane.centerPose.toMatrix(modelMatrix, 0)
-            Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, modelMatrix, 0)
-            Matrix.multiplyMM(mvpMatrix, 0, projMatrix, 0, mvMatrix, 0)
-            GLES20.glUniformMatrix4fv(uMvpMatrix, 1, false, mvpMatrix, 0)
-
-            // ARCore 凸包坐标: (x, z)，原点在 centerPose。我们转为三维坐标 (x, 0, z)
-            val vertexArray = FloatArray(pointCount * 3)
-            for (i in 0 until pointCount) {
-                vertexArray[i * 3 + 0] = polygon.get(i * 2 + 0)
-                vertexArray[i * 3 + 1] = 0.002f // 略微浮起 2mm 避开 Z-fighting
-                vertexArray[i * 3 + 2] = polygon.get(i * 2 + 1)
-            }
-
-            val vertexBuffer: FloatBuffer = ByteBuffer.allocateDirect(vertexArray.size * 4)
-                .order(ByteOrder.nativeOrder())
-                .asFloatBuffer()
-                .apply {
-                    put(vertexArray)
-                    position(0)
-                }
-
-            GLES20.glVertexAttribPointer(aPosition, 3, GLES20.GL_FLOAT, false, 0, vertexBuffer)
-            GLES20.glEnableVertexAttribArray(aPosition)
-
-            // 1. 根据平面类型着色区分
-            // 地面/桌面 (水平): 半透明荧光绿
-            // 墙面/门面 (垂直): 半透明冷青蓝 (高对比度一目了然)
-            val isVertical = (plane.type == Plane.Type.VERTICAL)
-            if (isVertical) {
-                // 垂直墙面填充: 半透明青蓝
-                GLES20.glUniform4f(uColor, 0.0f, 0.65f, 1.0f, 0.28f)
-            } else {
-                // 水平地面填充: 半透明终端绿
-                GLES20.glUniform4f(uColor, 0.0f, 0.90f, 0.40f, 0.22f)
-            }
-
-            // 三角扇 (Triangle Fan) 填充平面内部
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, pointCount)
-
-            // 2. 勾勒边缘实线轮廓，方便看出边界
-            GLES20.glLineWidth(4.0f)
-            if (isVertical) {
-                GLES20.glUniform4f(uColor, 0.2f, 0.85f, 1.0f, 0.90f) // 亮青边缘
-            } else {
-                GLES20.glUniform4f(uColor, 0.2f, 1.0f, 0.5f, 0.80f)  // 亮绿边缘
-            }
-            GLES20.glDrawArrays(GLES20.GL_LINE_LOOP, 0, pointCount)
-
-            GLES20.glDisableVertexAttribArray(aPosition)
+        // 若玩家进行了物理触地校准，将矩阵的 Y 轴平移高度严格对齐到真实触地零点
+        if (calibratedFloorY != null) {
+            modelMatrix[13] = calibratedFloorY
         }
 
+        Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, modelMatrix, 0)
+        Matrix.multiplyMM(mvpMatrix, 0, projMatrix, 0, mvMatrix, 0)
+        GLES20.glUniformMatrix4fv(uMvpMatrix, 1, false, mvpMatrix, 0)
+
+        val vertexArray = FloatArray(pointCount * 3)
+        for (i in 0 until pointCount) {
+            vertexArray[i * 3 + 0] = polygon.get(i * 2 + 0)
+            vertexArray[i * 3 + 1] = 0.002f // 略微上浮 2mm 避免与真实地板闪烁
+            vertexArray[i * 3 + 2] = polygon.get(i * 2 + 1)
+        }
+
+        val vertexBuffer: FloatBuffer = ByteBuffer.allocateDirect(vertexArray.size * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+            .apply {
+                put(vertexArray)
+                position(0)
+            }
+
+        GLES20.glVertexAttribPointer(aPosition, 3, GLES20.GL_FLOAT, false, 0, vertexBuffer)
+        GLES20.glEnableVertexAttribArray(aPosition)
+
+        // 填充半透明终端荧光绿
+        GLES20.glUniform4f(uColor, 0.0f, 0.95f, 0.45f, 0.24f)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, pointCount)
+
+        // 勾勒高对比度边框轮廓
+        GLES20.glLineWidth(5.0f)
+        GLES20.glUniform4f(uColor, 0.2f, 1.0f, 0.6f, 0.85f)
+        GLES20.glDrawArrays(GLES20.GL_LINE_LOOP, 0, pointCount)
+
+        GLES20.glDisableVertexAttribArray(aPosition)
         GLES20.glDepthMask(true)
         GLES20.glDisable(GLES20.GL_BLEND)
     }

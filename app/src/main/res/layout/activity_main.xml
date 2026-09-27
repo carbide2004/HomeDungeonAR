@@ -165,17 +165,18 @@
             android:orientation="horizontal">
 
             <Button
-                android:id="@+id/btnToggleFilter"
+                android:id="@+id/btnCalibrateFloor"
                 android:layout_width="0dp"
                 android:layout_height="36dp"
                 android:layout_marginEnd="4dp"
-                android:layout_weight="1"
+                android:layout_weight="1.2"
                 android:backgroundTint="@color/terminal_green"
-                android:paddingStart="2dp"
-                android:paddingEnd="2dp"
-                android:text="滤镜: 终端视界"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:text="🎯 贴地校准零点"
                 android:textColor="@color/black"
-                android:textSize="11sp" />
+                android:textSize="11sp"
+                android:textStyle="bold" />
 
             <Button
                 android:id="@+id/btnToggleDebugMarker"
