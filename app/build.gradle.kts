@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.homedungeon.ar"
+    namespace = "com.memepatrol.ar"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.homedungeon.ar"
+        applicationId = "com.memepatrol.ar"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

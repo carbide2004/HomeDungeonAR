@@ -9,21 +9,14 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- 3D 激光测距点阵 HUD 覆盖层 -->
-    <com.homedungeon.ar.rendering.DistanceMatrixOverlayView
-        android:id="@+id/distanceMatrixOverlay"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
-    <!-- Center Reticle (瞄准准星) -->
+    <!-- Center Reticle (极简特勤十字准星) -->
     <ImageView
         android:id="@+id/ivReticle"
-        android:layout_width="32dp"
-        android:layout_height="32dp"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
         android:layout_gravity="center"
-        android:src="@android:drawable/ic_menu_crop"
-        android:tint="@color/terminal_green"
-        android:alpha="0.75" />
+        android:src="@drawable/ic_clean_crosshair"
+        android:alpha="0.85" />
 
     <!-- Terminal Top HUD -->
     <LinearLayout

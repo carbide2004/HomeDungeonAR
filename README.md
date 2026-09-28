@@ -1,4 +1,4 @@
-# 家即副本 (HomeDungeonAR) - Agent 开发手册
+# 家即副本 (MemePatrol) - Agent 开发手册
 
 ## 1. 项目架构与模块划分
 
@@ -20,10 +20,10 @@
 
 # 3. 安装到真机并启动
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.homedungeon.ar/.MainActivity
+adb shell am start -n com.memepatrol.ar/.MainActivity
 
 # 4. 查看应用运行时日志
-adb logcat -s HomeDungeonAR:* AndroidRuntime:*
+adb logcat -s MemePatrol:* AndroidRuntime:*
 ```
 
 ## 3. 本地环境配置
