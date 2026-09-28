@@ -351,7 +351,32 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         if (currentFloorPos != null) {
             // 计算屏幕中心准星与地面的真实交点与物理直线距离
             val centerHit = StandardUnprojector.intersectPlane(centerRay, currentFloorPos)
-            currentGroundTargetPos = centerHit?.first
+            var candidateTargetPos = centerHit?.first
+            val candidateDistance = centerHit?.second ?: -1f
+
+            // 关键：物理遮挡与边界裁剪 (防止穿墙/穿入家具)
+            // 先通过 ARCore hitTest 检测准心方向是否存在更近的物理障碍物 (墙体/桌腿/柜子)
+            val centerX = viewportWidth / 2f
+            val centerY = viewportHeight / 2f
+            val hitResults = frame.hitTest(centerX, centerY)
+            for (hit in hitResults) {
+                val trackable = hit.trackable
+                // 如果在视线前方遇到了非地面的物理阻挡点，且阻挡距离比计算出的地面交点更近
+                if (trackable !is Plane || trackable.type != Plane.Type.HORIZONTAL_UPWARD_FACING) {
+                    if (candidateDistance > 0f && hit.distance < candidateDistance * 0.95f) {
+                        // 视线被前方障碍物挡住，截断地平面延伸
+                        candidateTargetPos = null
+                        break
+                    }
+                }
+            }
+
+            // 二次检验：检查交点是否落在当前已检测到的地面多边形有效范围内 (距中心过远则裁切)
+            if (candidateTargetPos != null && candidateDistance > 5.5f) {
+                candidateTargetPos = null
+            }
+
+            currentGroundTargetPos = candidateTargetPos
 
             // 采样 4x3 全屏测距点阵并传给 HUD 绘制
             val gridPoints = ArrayList<RayDistancePoint>()
@@ -520,6 +545,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             val floorStatus = if (currentFloorPos != null) "物理Anchor跟随(${ "%.2f".format(currentFloorPos.y)}m)" else "未检测到地面"
             val eyeHeight = if (currentFloorPos != null) (camPos.y - currentFloorPos.y) else 0f
             binding.tvInfo.text = "对地垂直净高: ${"%.2f".format(eyeHeight)}m | $floorStatus | 帧率: $currentFps FPS"
+
+            // 恢复实时三维物理坐标打印 (由 invViewMatrix 真实逆解提取，解决一直为 0 的问题)
+            binding.tvPose.text = String.format(
+                "坐标: X: %+.2fm | Y: %+.2fm | Z: %+.2fm",
+                camPos.x, camPos.y, camPos.z
+            )
 
             if (crawlerEntity.state != EntityState.IDLE && targetDistance >= 0f) {
                 val alignPct = (targetCosTheta.coerceAtLeast(0f) * 100).toInt()
