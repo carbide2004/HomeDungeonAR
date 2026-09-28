@@ -8,9 +8,8 @@ import java.nio.FloatBuffer
 import java.nio.ShortBuffer
 
 /**
- * 物理地面标桩渲染器：
- * 贴地六边形底盘 (直径 14cm) + 向上直立的小能量标桩 (高 10cm)
- * 专用于让玩家人肉校验“标桩是否平贴在地砖表面、走动时是否产生滑步漂移”
+ * 绝对零高度纯平地面标桩 (Zero-Height Flat Ground Pin)
+ * 物理厚度严格为 0，像一张发光贴纸直接印在地砖表面上，彻底消除任何 10cm 悬空错觉
  */
 class GroundPinRenderer {
 
@@ -20,57 +19,35 @@ class GroundPinRenderer {
     private var aPosition = 0
 
     private val vertexBuffer: FloatBuffer
-    private val wireIndexBuffer: ShortBuffer
-    private val solidIndexBuffer: ShortBuffer
-    private val wireIndexCount: Int
-    private val solidIndexCount: Int
+    private val indexBuffer: ShortBuffer
+    private val indexCount: Int
 
     init {
-        // 几何体构成：
-        // 顶点 0: 棱锥尖顶 (X=0, Y=0.10m, Z=0)
-        // 顶点 1: 底面圆心 (X=0, Y=0.001m, Z=0)
-        // 顶点 2~7: 贴地六边形顶点 (半径 R=0.07m, Y=0.001m 平平贴于地面)
+        // 构建严格平铺在 X-Z 平面的同心圆环地钉 (外径 7cm, 36个平滑分段, Y 严格为 0)
+        val segments = 36
+        val radius = 0.07f
         val vertices = ArrayList<Float>()
-        val wireIndices = ArrayList<Short>()
-        val solidIndices = ArrayList<Short>()
+        val indices = ArrayList<Short>()
 
-        // 0: 尖顶
-        vertices.add(0f); vertices.add(0.10f); vertices.add(0f)
-        // 1: 底心
-        vertices.add(0f); vertices.add(0.001f); vertices.add(0f)
+        // 顶点 0: 圆心 (X=0, Y=0.0f, Z=0)
+        vertices.add(0f); vertices.add(0.0005f); vertices.add(0f)
 
-        val segments = 6
-        val r = 0.07f
-        for (i in 0 until segments) {
+        for (i in 0..segments) {
             val angle = (i * 2.0 * Math.PI / segments).toFloat()
-            val x = r * kotlin.math.cos(angle)
-            val z = r * kotlin.math.sin(angle)
+            val x = radius * kotlin.math.cos(angle)
+            val z = radius * kotlin.math.sin(angle)
+            // 严格平铺在地面，Y 仅上浮 0.5mm 避免与地砖 Z-fighting
             vertices.add(x)
-            vertices.add(0.001f) // 贴地 1mm
+            vertices.add(0.0005f)
             vertices.add(z)
+
+            if (i > 0) {
+                indices.add(0)
+                indices.add(i.toShort())
+                indices.add((i + 1).toShort())
+            }
         }
-
-        // 构造底盘面三角形 (顶点 1 与周围顶点)
-        for (i in 0 until segments) {
-            val curr = (i + 2).toShort()
-            val next = ((i + 1) % segments + 2).toShort()
-            // 底面
-            solidIndices.add(1)
-            solidIndices.add(curr)
-            solidIndices.add(next)
-
-            // 侧棱锥面
-            solidIndices.add(0)
-            solidIndices.add(curr)
-            solidIndices.add(next)
-
-            // 线框: 底圈与立柱
-            wireIndices.add(curr); wireIndices.add(next) // 六边形底圈
-            wireIndices.add(0); wireIndices.add(curr)    // 尖顶至地面的棱线
-        }
-
-        wireIndexCount = wireIndices.size
-        solidIndexCount = solidIndices.size
+        indexCount = indices.size
 
         val vArray = FloatArray(vertices.size) { vertices[it] }
         vertexBuffer = ByteBuffer.allocateDirect(vArray.size * 4)
@@ -81,21 +58,12 @@ class GroundPinRenderer {
                 position(0)
             }
 
-        val wArray = ShortArray(wireIndices.size) { wireIndices[it] }
-        wireIndexBuffer = ByteBuffer.allocateDirect(wArray.size * 2)
+        val iArray = ShortArray(indices.size) { indices[it] }
+        indexBuffer = ByteBuffer.allocateDirect(iArray.size * 2)
             .order(ByteOrder.nativeOrder())
             .asShortBuffer()
             .apply {
-                put(wArray)
-                position(0)
-            }
-
-        val sArray = ShortArray(solidIndices.size) { solidIndices[it] }
-        solidIndexBuffer = ByteBuffer.allocateDirect(sArray.size * 2)
-            .order(ByteOrder.nativeOrder())
-            .asShortBuffer()
-            .apply {
-                put(sArray)
+                put(iArray)
                 position(0)
             }
     }
@@ -104,16 +72,34 @@ class GroundPinRenderer {
         val vs = """
             uniform mat4 u_MvpMatrix;
             attribute vec4 a_Position;
+            varying vec2 v_LocalXZ;
             void main() {
                 gl_Position = u_MvpMatrix * a_Position;
+                v_LocalXZ = a_Position.xz;
             }
         """.trimIndent()
 
         val fs = """
             precision mediump float;
+            varying vec2 v_LocalXZ;
             uniform vec4 u_Color;
             void main() {
-                gl_FragColor = u_Color;
+                float dist = length(v_LocalXZ) / 0.07;
+                
+                // 1. 外圈细环 (半径 0.85 ~ 0.98)
+                float outerRing = smoothstep(0.85, 0.90, dist) - smoothstep(0.96, 1.0, dist);
+                // 2. 内圈细环 (半径 0.40 ~ 0.50)
+                float innerRing = smoothstep(0.40, 0.44, dist) - smoothstep(0.48, 0.52, dist);
+                // 3. 中心十字微点 (半径 0.0 ~ 0.10)
+                float centerDot = 1.0 - smoothstep(0.0, 0.12, dist);
+                
+                // 4. 十字准线
+                float crossX = step(abs(v_LocalXZ.x), 0.0015) * step(dist, 0.95);
+                float crossZ = step(abs(v_LocalXZ.y), 0.0015) * step(dist, 0.95);
+                float crosshair = max(crossX, crossZ);
+
+                float alpha = clamp(outerRing * 1.0 + innerRing * 0.7 + centerDot * 0.9 + crosshair * 0.85, 0.0, 1.0);
+                gl_FragColor = vec4(u_Color.rgb, alpha * u_Color.a);
             }
         """.trimIndent()
 
@@ -138,27 +124,22 @@ class GroundPinRenderer {
         Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, modelMatrix, 0)
         Matrix.multiplyMM(mvpMatrix, 0, projMatrix, 0, mvMatrix, 0)
 
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDisable(GLES20.GL_CULL_FACE)
+
         GLES20.glUseProgram(program)
         GLES20.glUniformMatrix4fv(uMvpMatrix, 1, false, mvpMatrix, 0)
+        GLES20.glUniform4f(uColor, 0.0f, 1.0f, 0.55f, 0.95f)
 
         vertexBuffer.position(0)
         GLES20.glVertexAttribPointer(aPosition, 3, GLES20.GL_FLOAT, false, 0, vertexBuffer)
         GLES20.glEnableVertexAttribArray(aPosition)
 
-        // 1. 绘制半透明荧光绿底座
-        GLES20.glEnable(GLES20.GL_BLEND)
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-        GLES20.glUniform4f(uColor, 0.0f, 0.95f, 0.45f, 0.35f)
-        solidIndexBuffer.position(0)
-        GLES20.glDrawElements(GLES20.GL_TRIANGLES, solidIndexCount, GLES20.GL_UNSIGNED_SHORT, solidIndexBuffer)
+        indexBuffer.position(0)
+        GLES20.glDrawElements(GLES20.GL_TRIANGLES, indexCount, GLES20.GL_UNSIGNED_SHORT, indexBuffer)
 
-        // 2. 绘制亮青绿骨架线框
-        GLES20.glLineWidth(4.0f)
-        GLES20.glUniform4f(uColor, 0.2f, 1.0f, 0.7f, 1.0f)
-        wireIndexBuffer.position(0)
-        GLES20.glDrawElements(GLES20.GL_LINES, wireIndexCount, GLES20.GL_UNSIGNED_SHORT, wireIndexBuffer)
-
-        GLES20.glDisable(GLES20.GL_BLEND)
         GLES20.glDisableVertexAttribArray(aPosition)
+        GLES20.glDisable(GLES20.GL_BLEND)
     }
 }
