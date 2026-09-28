@@ -209,30 +209,32 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val centerX = viewportWidth / 2f
         val centerY = viewportHeight / 2f
         var currentCrosshairDistance = -1f
+        var isTargetingRigidGround = false
 
         if (trackingState == TrackingState.TRACKING) {
             val hitResults = frame.hitTest(centerX, centerY)
             for (hit in hitResults) {
                 val trackable = hit.trackable
-                // 仅采信水平地面或带表面法向的刚性点云
-                val isGroundHit = (trackable is Plane && trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING) ||
-                        (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)
+                // 工业级铁律：绝不采信临时漂动的 Point！严格只在已被收敛识别的真实物理平面 Plane 上打桩
+                if (trackable is Plane && trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING && trackable.trackingState == TrackingState.TRACKING) {
+                    // 并且击中点必须在平面实际多边形内部
+                    if (trackable.isPoseInPolygon(hit.hitPose) || trackable.isPoseInExtents(hit.hitPose)) {
+                        currentCrosshairDistance = hit.distance
+                        isTargetingRigidGround = true
 
-                if (isGroundHit) {
-                    currentCrosshairDistance = hit.distance
-
-                    // 收到 UI 按钮打点请求
-                    if (pendingAddPin) {
-                        pendingAddPin = false
-                        // 核心：创建 ARCore 底层原生物理刚体 Anchor
-                        val anchor = hit.createAnchor()
-                        groundPins.add(anchor)
-                        runOnUiThread {
-                            hapticDriver.triggerOneShotTap(binding.root)
-                            Toast.makeText(this, "第 ${groundPins.size} 个地面标桩已钉入地表", Toast.LENGTH_SHORT).show()
+                        // 收到 UI 按钮打点请求
+                        if (pendingAddPin) {
+                            pendingAddPin = false
+                            // 核心：直接基于刚性平面的命中位姿创建物理 Anchor，绝对不飘
+                            val anchor = hit.createAnchor()
+                            groundPins.add(anchor)
+                            runOnUiThread {
+                                hapticDriver.triggerOneShotTap(binding.root)
+                                Toast.makeText(this, "第 ${groundPins.size} 个地面标桩已钉死在地砖上", Toast.LENGTH_SHORT).show()
+                            }
                         }
+                        break
                     }
-                    break
                 }
             }
         }
@@ -240,7 +242,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         if (pendingAddPin) {
             pendingAddPin = false
             runOnUiThread {
-                Toast.makeText(this, "未对准地面！请对准带纹理的地砖后再点", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "未锁定平整地面！请将准星对准带地砖纹理的区域", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -258,12 +260,17 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         // 4. UI 数据更新
         val pinCount = groundPins.size
         runOnUiThread {
-            if (trackingState == TrackingState.TRACKING) {
-                binding.tvStatus.text = "空间基准正常：请将准星对准地面，点击「标定」"
-            } else if (trackingState == TrackingState.PAUSED) {
-                binding.tvStatus.text = "正在校准空间基准... (请缓慢平移手机扫描地砖)"
+            // 根据准星是否锁定在真实地面，改变准星透明度与状态提示
+            if (isTargetingRigidGround) {
+                binding.ivReticle.alpha = 1.0f
+                binding.btnPlacePin.isEnabled = true
+                binding.btnPlacePin.alpha = 1.0f
+                binding.tvStatus.text = "地表已锁定！点击「标定地面点」钉入标桩"
             } else {
-                binding.tvStatus.text = "追踪丢失 (请面向光线充足区域)"
+                binding.ivReticle.alpha = 0.35f
+                binding.btnPlacePin.isEnabled = false
+                binding.btnPlacePin.alpha = 0.5f
+                binding.tvStatus.text = "正在寻找水平地面... 请缓慢平移手机扫描地砖"
             }
 
             val distStr = if (currentCrosshairDistance > 0f) "${"%.2f".format(currentCrosshairDistance)}m" else "--m"
