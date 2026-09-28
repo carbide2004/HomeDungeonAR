@@ -43,7 +43,7 @@ import com.homedungeon.ar.rendering.PlaneVisualizer
 import com.homedungeon.ar.rendering.WallDecalRenderer
 import com.homedungeon.core.BlindCrawlerEntity
 import com.homedungeon.ar.rendering.GroundReticleRenderer
-import com.homedungeon.core.GroundPhysicsEngine
+import com.homedungeon.core.StandardUnprojector
 import com.homedungeon.core.MatrixRaycastEngine
 import com.homedungeon.core.RayDistancePoint
 import com.homedungeon.core.EntityState
@@ -77,7 +77,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var currentK = 2.0f
     private var terminalFilterEnabled = true
     private var showDebugMarker = true
-    private var calibratedFloorY: Float? = null
+    
+    // 关键修正：必须使用动态 Anchor 承载物理地面零点，随帧获取当前变换，绝不用裸 float！
+    private var floorAnchor: Anchor? = null
     @Volatile
     private var pendingCalibrateFloor = false
     private var currentGroundTargetPos: Vector3? = null
@@ -308,78 +310,96 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         camera.getProjectionMatrix(projMatrix, 0, 0.05f, 100.0f)
         camera.getViewMatrix(viewMatrix, 0)
 
-        // 核心数学修正：从 viewMatrix 的逆矩阵直接提取相机在世界空间中的绝对真实位置与视线向量！
-        // 在 OpenGL 中，viewMatrix 的第 3 列 (索引 2, 6, 10) 正是相机的视线后方 (+Z)，
-        // 取反即为相机的严格正前方向量 (-viewMatrix[2], -viewMatrix[6], -viewMatrix[10])
+        // 核心数学优化：直接计算 (P * V)^(-1) 联合逆矩阵！
+        // 将屏幕任意 NDC (u, v) 经过严格反投影变换到世界系射线，自带真实的 Viewport、Aspect 与 Display Rotation
+        val pvMatrix = FloatArray(16)
+        val invPvMatrix = FloatArray(16)
+        Matrix.multiplyMM(pvMatrix, 0, projMatrix, 0, viewMatrix, 0)
+        Matrix.invertM(invPvMatrix, 0, pvMatrix, 0)
+
+        // 提取相机的精确物理世界位置
         val invViewMatrix = FloatArray(16)
         Matrix.invertM(invViewMatrix, 0, viewMatrix, 0)
-
         val camPos = Vector3(invViewMatrix[12], invViewMatrix[13], invViewMatrix[14])
-        // 视线前向单位向量：
-        val camFwd = Vector3(-viewMatrix[2], -viewMatrix[6], -viewMatrix[10]).normalized()
-        // 屏幕右侧单位向量：
         val camRight = Vector3(viewMatrix[0], viewMatrix[4], viewMatrix[8]).normalized()
-        // 屏幕上侧单位向量：
-        val camUp = Vector3(viewMatrix[1], viewMatrix[5], viewMatrix[9]).normalized()
 
-        // 核心：寻找最稳的实际物理地坪 Y 轴真值
-        // 1. 如果玩家点击锁定过，使用锁定值；
-        // 2. 否则，从 ARCore 当前跟踪到的所有水平地面中提取最低的稳定平面作为 Y 轴基准；
-        // 3. 如果尚未检测到任何地面，绝不硬编码盲猜高度，而是保持未就绪状态 (null)
-        if (calibratedFloorY == null) {
+        // 核心：维护动态地面 Anchor，而不是跨帧保存裸 float！
+        if (floorAnchor == null) {
             val allPlanes = currentSession.getAllTrackables(Plane::class.java)
             val detectedFloors = allPlanes.filter { 
                 it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.trackingState == TrackingState.TRACKING 
             }
             if (detectedFloors.isNotEmpty()) {
-                calibratedFloorY = detectedFloors.minOf { it.centerPose.ty() }
+                val lowestPlane = detectedFloors.minByOrNull { it.centerPose.ty() }
+                if (lowestPlane != null) {
+                    floorAnchor = lowestPlane.createAnchor(lowestPlane.centerPose)
+                }
             }
         }
 
-        val activeFloorY = calibratedFloorY
+        // 获取当帧最新的物理地面参考点 (随时跟踪 ARCore 的世界系局部修正，永不漂移)
+        val currentFloorPos = floorAnchor?.let { anchor ->
+            if (anchor.trackingState == TrackingState.TRACKING) {
+                Vector3(anchor.pose.tx(), anchor.pose.ty(), anchor.pose.tz())
+            } else null
+        }
 
-        if (activeFloorY != null) {
-            // 计算 4x3 全屏激光测距点阵并传给 HUD 绘制
-            val raycastGrid = MatrixRaycastEngine.computeGridRaycasts(
-                camPos = camPos,
-                camForward = camFwd,
-                camRight = camRight,
-                camUp = camUp,
-                floorY = activeFloorY,
-                gridRows = 4,
-                gridCols = 3,
-                aspect = (viewportWidth.toFloat() / viewportHeight.toFloat())
-            )
-            runOnUiThread {
-                binding.distanceMatrixOverlay.updatePoints(raycastGrid)
+        // 屏幕中心视线射线 (u=0, v=0)
+        val centerRay = StandardUnprojector.unprojectNdCToWorldRay(0f, 0f, invPvMatrix)
+        val camFwd = centerRay.direction
+
+        if (currentFloorPos != null) {
+            // 计算屏幕中心准星与地面的真实交点与物理直线距离
+            val centerHit = StandardUnprojector.intersectPlane(centerRay, currentFloorPos)
+            currentGroundTargetPos = centerHit?.first
+
+            // 采样 4x3 全屏测距点阵并传给 HUD 绘制
+            val gridPoints = ArrayList<RayDistancePoint>()
+            val rows = 4
+            val cols = 3
+            for (r in 0 until rows) {
+                val vNorm = (r + 1).toFloat() / (rows + 1).toFloat()
+                val ndcY = 1.0f - 2.0f * vNorm // NDC Y: [-1, 1]
+
+                for (c in 0 until cols) {
+                    val uNorm = (c + 1).toFloat() / (cols + 1).toFloat()
+                    val ndcX = 2.0f * uNorm - 1.0f // NDC X: [-1, 1]
+
+                    val ray = StandardUnprojector.unprojectNdCToWorldRay(ndcX, ndcY, invPvMatrix)
+                    val hit = StandardUnprojector.intersectPlane(ray, currentFloorPos)
+                    if (hit != null) {
+                        gridPoints.add(RayDistancePoint(uNorm, vNorm, hit.first, hit.second))
+                    } else {
+                        gridPoints.add(RayDistancePoint(uNorm, vNorm, null, -1f))
+                    }
+                }
             }
-
-            currentGroundTargetPos = GroundPhysicsEngine.projectReticleToFloorY(
-                cameraWorldPos = camPos,
-                cameraForwardRay = camFwd,
-                floorY = activeFloorY
-            )
+            runOnUiThread {
+                binding.distanceMatrixOverlay.updatePoints(gridPoints)
+            }
         } else {
+            currentGroundTargetPos = null
             runOnUiThread {
                 binding.distanceMatrixOverlay.updatePoints(emptyList())
             }
-            currentGroundTargetPos = null
         }
 
-        // 按钮点击处理: 通过当前准心射线的真实地面交点精准锁定地表，绝不假设蹲下或站立高度！
+        // 按钮点击处理: 通过当前准心射线的真实交点，生成一个永久稳固贴合的地面 Anchor！
         if (pendingCalibrateFloor && trackingState == TrackingState.TRACKING) {
             pendingCalibrateFloor = false
             val target = currentGroundTargetPos
             if (target != null) {
-                calibratedFloorY = target.y
+                floorAnchor?.detach()
+                val anchorPose = Pose.makeTranslation(target.x, target.y, target.z)
+                floorAnchor = currentSession.createAnchor(anchorPose)
                 runOnUiThread {
                     hapticDriver.triggerOneShotTap(binding.root)
-                    Toast.makeText(this, "物理地板高度已锁定: ${"%.2f".format(calibratedFloorY)}m", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "物理地面基准已通过准心精确锁定", Toast.LENGTH_SHORT).show()
                     binding.btnCalibrateFloor.text = "地面: 已锁定"
                 }
             } else {
                 runOnUiThread {
-                    Toast.makeText(this, "未检测到地面，请先平移手机扫描地砖", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "未对准地面，请将准星指向地板后再点", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -497,9 +517,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 binding.tvStatus.text = "追踪丢失 (尝试面向光线充足区域)"
             }
 
-            val floorStatus = if (calibratedFloorY != null) "物理锁定(Y=${"%.2f".format(calibratedFloorY)}m)" else "未锁定"
-            val eyeHeight = if (calibratedFloorY != null) (camPos.y - calibratedFloorY!!) else 0f
-            binding.tvInfo.text = "对地高度: ${"%.2f".format(eyeHeight)}m | $floorStatus | 帧率: $currentFps FPS"
+            val floorStatus = if (currentFloorPos != null) "物理Anchor跟随(${ "%.2f".format(currentFloorPos.y)}m)" else "未检测到地面"
+            val eyeHeight = if (currentFloorPos != null) (camPos.y - currentFloorPos.y) else 0f
+            binding.tvInfo.text = "对地垂直净高: ${"%.2f".format(eyeHeight)}m | $floorStatus | 帧率: $currentFps FPS"
 
             if (crawlerEntity.state != EntityState.IDLE && targetDistance >= 0f) {
                 val alignPct = (targetCosTheta.coerceAtLeast(0f) * 100).toInt()
