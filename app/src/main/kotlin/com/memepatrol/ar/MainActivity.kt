@@ -1,21 +1,13 @@
 package com.memepatrol.ar
 
 import android.Manifest
-import android.content.Context
 import android.content.pm.PackageManager
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
-import android.os.Build
 import android.os.Bundle
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import android.util.Log
-import android.view.GestureDetector
-import android.view.MotionEvent
 import android.view.View
 import android.widget.Toast
-import android.opengl.Matrix
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -23,45 +15,23 @@ import com.google.ar.core.Anchor
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Config
 import com.google.ar.core.Frame
-import com.google.ar.core.InstantPlacementPoint
 import com.google.ar.core.Plane
 import com.google.ar.core.Point
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.CameraNotAvailableException
-import com.google.ar.core.exceptions.UnavailableApkTooOldException
-import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException
-import com.google.ar.core.exceptions.UnavailableDeviceNotCompatibleException
-import com.google.ar.core.exceptions.UnavailableSdkTooOldException
-import com.memepatrol.ar.audio.SpatialAudioEngine
-import com.memepatrol.ar.audio.SoundTrackType
 import com.memepatrol.ar.databinding.ActivityMainBinding
 import com.memepatrol.ar.haptics.DetectorHapticDriver
 import com.memepatrol.ar.rendering.BackgroundRenderer
-import com.memepatrol.ar.rendering.CubeRenderer
-import com.memepatrol.ar.rendering.PlaneVisualizer
-import com.memepatrol.ar.rendering.WallDecalRenderer
-import com.memepatrol.core.BlindCrawlerEntity
-import com.memepatrol.ar.rendering.GroundReticleRenderer
-import com.memepatrol.ar.rendering.TenCentimeterGridRenderer
-import com.memepatrol.core.StandardUnprojector
-import com.memepatrol.core.MatrixRaycastEngine
-import com.memepatrol.core.RayDistancePoint
-import com.memepatrol.core.EntityState
-import com.memepatrol.core.DetectorMath
-import com.memepatrol.core.SpatialAudioMath
-import com.memepatrol.core.Vector3
-import com.memepatrol.core.WallAnomalyStateMachine
-import com.memepatrol.core.WallPoseDerivation
-import com.google.ar.core.Pose
-import java.util.concurrent.ArrayBlockingQueue
+import com.memepatrol.ar.rendering.GroundPinRenderer
+import java.util.concurrent.CopyOnWriteArrayList
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     companion object {
-        private const val TAG = "ARMainActivity"
+        private const val TAG = "MemePatrolMain"
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -69,33 +39,17 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var installRequested = false
 
     private val backgroundRenderer = BackgroundRenderer()
-    private val cubeRenderer = CubeRenderer()
-    private val groundReticleRenderer = GroundReticleRenderer()
-    private val tenCentimeterGridRenderer = TenCentimeterGridRenderer()
-    private val crawlerEntity = BlindCrawlerEntity()
+    private val groundPinRenderer = GroundPinRenderer()
     private lateinit var hapticDriver: DetectorHapticDriver
-    private lateinit var audioEngine: SpatialAudioEngine
 
-    private var currentK = 2.0f
-    private var terminalFilterEnabled = true
-    private var showDebugMarker = true
-    
-    // 关键修正：必须使用动态 Anchor 承载物理地面零点，随帧获取当前变换，绝不用裸 float！
-    private var floorAnchor: Anchor? = null
+    // 严谨存储所有打下的物理地面刚性标桩
+    private val groundPins = CopyOnWriteArrayList<Anchor>()
+
     @Volatile
-    private var pendingCalibrateFloor = false
-    private var currentGroundTargetPos: Vector3? = null
+    private var pendingAddPin = false
+
     private var viewportWidth = 1080
     private var viewportHeight = 2400
-    private var lastFrameTimestamp = System.currentTimeMillis()
-
-    private val anchors = ArrayList<Anchor>()
-    private val queuedSingleTaps = ArrayBlockingQueue<MotionEvent>(16)
-
-    // FPS & Diagnostics
-    private var frameCount = 0
-    private var lastFpsTimestamp = System.currentTimeMillis()
-    private var currentFps = 0
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -114,57 +68,30 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         hapticDriver = DetectorHapticDriver(this)
-        audioEngine = SpatialAudioEngine(this)
 
-        binding.btnK1.setOnClickListener { setK(1.0f) }
-        binding.btnK2.setOnClickListener { setK(2.0f) }
-        binding.btnK4.setOnClickListener { setK(4.0f) }
-
-        binding.btnCalibrateFloor.setOnClickListener {
-            pendingCalibrateFloor = true
+        // 核心交互：准星对准地面，点击按钮精准打桩
+        binding.btnPlacePin.setOnClickListener {
+            pendingAddPin = true
         }
 
-        binding.btnToggleDebugMarker.setOnClickListener {
-            showDebugMarker = !showDebugMarker
-            if (showDebugMarker) {
-                binding.btnToggleDebugMarker.text = "调试标点: 开"
-                binding.btnToggleDebugMarker.backgroundTintList = ContextCompat.getColorStateList(this, R.color.terminal_dark)
-                binding.btnToggleDebugMarker.setTextColor(ContextCompat.getColor(this, R.color.terminal_green))
-                Toast.makeText(this, "已开启实体碰撞标点 (可视)", Toast.LENGTH_SHORT).show()
-            } else {
-                binding.btnToggleDebugMarker.text = "调试标点: 隐形"
-                binding.btnToggleDebugMarker.backgroundTintList = ContextCompat.getColorStateList(this, R.color.terminal_green)
-                binding.btnToggleDebugMarker.setTextColor(ContextCompat.getColor(this, R.color.black))
-                Toast.makeText(this, "已开启完全隐形潜行模式", Toast.LENGTH_SHORT).show()
+        binding.btnClearPins.setOnClickListener {
+            for (pin in groundPins) {
+                pin.detach()
             }
-        }
-
-        binding.btnRespawnEntity.setOnClickListener {
-            crawlerEntity.reset()
-            synchronized(anchors) {
-                for (a in anchors) a.detach()
-                anchors.clear()
-            }
+            groundPins.clear()
             runOnUiThread {
-                binding.tvEntityState.text = "实体状态: 未初始化 (请重新轻触地面生成)"
-                Toast.makeText(this, "异常实体已驱逐，请重新投放", Toast.LENGTH_SHORT).show()
+                binding.tvPinInfo.text = "已标定地面点: 0 个 | 准星距离: --m"
+                Toast.makeText(this, "地面标桩已清空", Toast.LENGTH_SHORT).show()
             }
+        }
+
+        binding.btnGrantPermission.setOnClickListener {
+            requestCameraPermission()
         }
 
         setupGlSurfaceView()
     }
 
-    private fun setK(k: Float) {
-        currentK = k
-        binding.btnK1.backgroundTintList = ContextCompat.getColorStateList(this, if (k == 1.0f) R.color.terminal_green else R.color.terminal_dark)
-        binding.btnK1.setTextColor(ContextCompat.getColor(this, if (k == 1.0f) R.color.black else R.color.terminal_green))
-
-        binding.btnK2.backgroundTintList = ContextCompat.getColorStateList(this, if (k == 2.0f) R.color.terminal_green else R.color.terminal_dark)
-        binding.btnK2.setTextColor(ContextCompat.getColor(this, if (k == 2.0f) R.color.black else R.color.terminal_green))
-
-        binding.btnK4.backgroundTintList = ContextCompat.getColorStateList(this, if (k == 4.0f) R.color.terminal_green else R.color.terminal_dark)
-        binding.btnK4.setTextColor(ContextCompat.getColor(this, if (k == 4.0f) R.color.black else R.color.terminal_green))
-    }
     private fun setupGlSurfaceView() {
         binding.surfaceView.preserveEGLContextOnPause = true
         binding.surfaceView.setEGLContextClientVersion(2)
@@ -172,36 +99,19 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         binding.surfaceView.setRenderer(this)
         binding.surfaceView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         binding.surfaceView.setWillNotDraw(false)
-
-        val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onSingleTapUp(e: MotionEvent): Boolean {
-                queuedSingleTaps.offer(e)
-                return true
-            }
-
-            override fun onDown(e: MotionEvent): Boolean = true
-        })
-
-        binding.surfaceView.setOnTouchListener { _, event ->
-            gestureDetector.onTouchEvent(event)
-        }
     }
 
     override fun onResume() {
         super.onResume()
-
         if (!hasCameraPermission()) {
             requestCameraPermission()
             return
         }
-
         setupArSession()
     }
 
     private fun setupArSession() {
         if (session == null) {
-            var exception: Exception? = null
-            var message: String? = null
             try {
                 when (ArCoreApk.getInstance().requestInstall(this, !installRequested)) {
                     ArCoreApk.InstallStatus.INSTALL_REQUESTED -> {
@@ -214,33 +124,15 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 session = Session(this).apply {
                     val config = Config(this).apply {
                         focusMode = Config.FocusMode.AUTO
+                        // 专注水平地面追踪，关闭嘈杂的垂直面
                         planeFindingMode = Config.PlaneFindingMode.HORIZONTAL
                         lightEstimationMode = Config.LightEstimationMode.AMBIENT_INTENSITY
                         instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
                     }
                     configure(config)
                 }
-            } catch (e: UnavailableArcoreNotInstalledException) {
-                message = "请安装 Google Play Services for AR"
-                exception = e
-            } catch (e: UnavailableApkTooOldException) {
-                message = "ARCore 服务版本过旧，请升级"
-                exception = e
-            } catch (e: UnavailableSdkTooOldException) {
-                message = "应用 SDK 版本过旧"
-                exception = e
-            } catch (e: UnavailableDeviceNotCompatibleException) {
-                message = "当前设备不支持 ARCore 空间追踪"
-                exception = e
             } catch (e: Exception) {
-                message = "创建 AR 会话失败: ${e.message}"
-                exception = e
-            }
-
-            if (message != null) {
-                Log.e(TAG, "ARCore Session Error", exception)
-                binding.tvStatus.text = message
-                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                Log.e(TAG, "ARCore Session Error: ${e.message}")
                 return
             }
         }
@@ -248,7 +140,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         try {
             session?.resume()
         } catch (e: CameraNotAvailableException) {
-            binding.tvStatus.text = "相机已被占用，请重启应用"
             session = null
             return
         }
@@ -270,14 +161,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         session = null
     }
 
-    // --- GLSurfaceView.Renderer implementation ---
+    // --- GLSurfaceView.Renderer ---
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES20.glClearColor(0.0f, 0.0f, 0.0f, 1.0f)
         backgroundRenderer.createOnGlThread()
-        cubeRenderer.createOnGlThread()
-        groundReticleRenderer.createOnGlThread()
-        tenCentimeterGridRenderer.createOnGlThread()
+        groundPinRenderer.createOnGlThread()
         session?.setCameraTextureName(backgroundRenderer.textureId)
     }
 
@@ -292,264 +181,93 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
 
         val currentSession = session ?: return
-
-        // Associate texture if needed
         currentSession.setCameraTextureName(backgroundRenderer.textureId)
 
         val frame: Frame
         try {
             frame = currentSession.update()
         } catch (t: Throwable) {
-            Log.e(TAG, "Exception updating AR frame", t)
             return
         }
 
         val camera = frame.camera
         val trackingState = camera.trackingState
 
-        // Matrices
+        // 1. 绘制相机背景 (纯净直通/轻微终端调色，不叠加任何假网格)
+        backgroundRenderer.draw(
+            frame = frame,
+            intensity = 0f,
+            filterEnabled = true
+        )
+
         val projMatrix = FloatArray(16)
         val viewMatrix = FloatArray(16)
         camera.getProjectionMatrix(projMatrix, 0, 0.05f, 100.0f)
         camera.getViewMatrix(viewMatrix, 0)
 
-        // 核心数学优化：直接计算 (P * V)^(-1) 联合逆矩阵！
-        // 将屏幕任意 NDC (u, v) 经过严格反投影变换到世界系射线，自带真实的 Viewport、Aspect 与 Display Rotation
-        val pvMatrix = FloatArray(16)
-        val invPvMatrix = FloatArray(16)
-        Matrix.multiplyMM(pvMatrix, 0, projMatrix, 0, viewMatrix, 0)
-        Matrix.invertM(invPvMatrix, 0, pvMatrix, 0)
+        // 2. 准星对准地面检测与打点处理 (在 GL 线程执行)
+        val centerX = viewportWidth / 2f
+        val centerY = viewportHeight / 2f
+        var currentCrosshairDistance = -1f
 
-        // 提取相机的精确物理世界位置
-        val invViewMatrix = FloatArray(16)
-        Matrix.invertM(invViewMatrix, 0, viewMatrix, 0)
-        val camPos = Vector3(invViewMatrix[12], invViewMatrix[13], invViewMatrix[14])
-        val camRight = Vector3(viewMatrix[0], viewMatrix[4], viewMatrix[8]).normalized()
-
-        // 核心：维护动态地面 Anchor，而不是跨帧保存裸 float！
-        if (floorAnchor == null) {
-            val allPlanes = currentSession.getAllTrackables(Plane::class.java)
-            val detectedFloors = allPlanes.filter { 
-                it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.trackingState == TrackingState.TRACKING 
-            }
-            if (detectedFloors.isNotEmpty()) {
-                val lowestPlane = detectedFloors.minByOrNull { it.centerPose.ty() }
-                if (lowestPlane != null) {
-                    floorAnchor = lowestPlane.createAnchor(lowestPlane.centerPose)
-                }
-            }
-        }
-
-        // 获取当帧最新的物理地面参考点 (随时跟踪 ARCore 的世界系局部修正，永不漂移)
-        val currentFloorPos = floorAnchor?.let { anchor ->
-            if (anchor.trackingState == TrackingState.TRACKING) {
-                Vector3(anchor.pose.tx(), anchor.pose.ty(), anchor.pose.tz())
-            } else null
-        }
-
-        // 屏幕中心视线射线 (u=0, v=0)
-        val centerRay = StandardUnprojector.unprojectNdCToWorldRay(0f, 0f, invPvMatrix)
-        val camFwd = centerRay.direction
-
-        if (currentFloorPos != null) {
-            // 计算屏幕中心准星与地面的真实交点与物理直线距离
-            val centerHit = StandardUnprojector.intersectPlane(centerRay, currentFloorPos)
-            var candidateTargetPos = centerHit?.first
-            val candidateDistance = centerHit?.second ?: -1f
-
-            // 关键：物理遮挡与边界裁剪 (防止穿墙/穿入家具)
-            // 先通过 ARCore hitTest 检测准心方向是否存在更近的物理障碍物 (墙体/桌腿/柜子)
-            val centerX = viewportWidth / 2f
-            val centerY = viewportHeight / 2f
+        if (trackingState == TrackingState.TRACKING) {
             val hitResults = frame.hitTest(centerX, centerY)
             for (hit in hitResults) {
                 val trackable = hit.trackable
-                if (trackable !is Plane || trackable.type != Plane.Type.HORIZONTAL_UPWARD_FACING) {
-                    if (candidateDistance > 0f && hit.distance < candidateDistance * 0.95f) {
-                        candidateTargetPos = null
-                        break
+                // 仅采信水平地面或带表面法向的刚性点云
+                val isGroundHit = (trackable is Plane && trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING) ||
+                        (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)
+
+                if (isGroundHit) {
+                    currentCrosshairDistance = hit.distance
+
+                    // 收到 UI 按钮打点请求
+                    if (pendingAddPin) {
+                        pendingAddPin = false
+                        // 核心：创建 ARCore 底层原生物理刚体 Anchor
+                        val anchor = hit.createAnchor()
+                        groundPins.add(anchor)
+                        runOnUiThread {
+                            hapticDriver.triggerOneShotTap(binding.root)
+                            Toast.makeText(this, "第 ${groundPins.size} 个地面标桩已钉入地表", Toast.LENGTH_SHORT).show()
+                        }
                     }
-                }
-            }
-
-            if (candidateTargetPos != null && candidateDistance > 5.5f) {
-                candidateTargetPos = null
-            }
-
-            currentGroundTargetPos = candidateTargetPos
-        } else {
-            currentGroundTargetPos = null
-        }
-
-        // 按钮点击处理: 通过当前准心射线的真实交点，生成一个永久稳固贴合的地面 Anchor！
-        if (pendingCalibrateFloor && trackingState == TrackingState.TRACKING) {
-            pendingCalibrateFloor = false
-            val target = currentGroundTargetPos
-            if (target != null) {
-                floorAnchor?.detach()
-                val anchorPose = Pose.makeTranslation(target.x, target.y, target.z)
-                floorAnchor = currentSession.createAnchor(anchorPose)
-                runOnUiThread {
-                    hapticDriver.triggerOneShotTap(binding.root)
-                    Toast.makeText(this, "物理地面基准已通过准心精确锁定", Toast.LENGTH_SHORT).show()
-                    binding.btnCalibrateFloor.text = "地面: 已锁定"
-                }
-            } else {
-                runOnUiThread {
-                    Toast.makeText(this, "未对准地面，请将准星指向地板后再点", Toast.LENGTH_SHORT).show()
+                    break
                 }
             }
         }
 
-        // Update FPS
-        frameCount++
-        val now = System.currentTimeMillis()
-        val delta = now - lastFpsTimestamp
-        if (delta >= 1000) {
-            currentFps = (frameCount * 1000.0 / delta).toInt()
-            frameCount = 0
-            lastFpsTimestamp = now
-        }
-
-        // Handle Tap for Hit Testing (在绝对物理地表光环处投放实体)
-        val tap = queuedSingleTaps.poll()
-        if (tap != null && trackingState == TrackingState.TRACKING) {
-            val targetPos = currentGroundTargetPos
-            if (targetPos != null) {
-                crawlerEntity.spawnAt(targetPos)
-                hapticDriver.triggerOneShotTap(binding.root)
+        if (pendingAddPin) {
+            pendingAddPin = false
+            runOnUiThread {
+                Toast.makeText(this, "未对准地面！请对准带纹理的地砖后再点", Toast.LENGTH_SHORT).show()
             }
         }
 
-        // 3. 驱动实体 AI 并在世界坐标系计算声震物理量
-        var maxIntensity = 0.0f
-        var targetDistance = -1.0f
-        var targetCosTheta = -1.0f
-
-        var spatialAudioResult = com.memepatrol.core.SpatialAudioResult(0f, 0f, -1f, 0f)
-
-        val nowMs = System.currentTimeMillis()
-        val deltaSeconds = (nowMs - lastFrameTimestamp).coerceIn(1L, 200L) / 1000.0f
-        lastFrameTimestamp = nowMs
-
-        if (crawlerEntity.state != EntityState.IDLE) {
-            val entityPos = crawlerEntity.position
-            val (intensity, dist, cos) = DetectorMath.calculateIntensity(
-                camPos, camFwd, entityPos, k = currentK
-            )
-            maxIntensity = intensity
-            targetDistance = dist
-            targetCosTheta = cos
-
-            // 实体 AI 更新: 如果玩家准星对准实体 (cos >= 0.88 且 dist <= 3.5m)，实体触发 ALERT 警觉并停步
-            val isGazed = (cos >= 0.88f && dist in 0.2f..3.5f)
-            crawlerEntity.update(deltaSeconds, isGazed)
-
-            // 计算该实体的立体声像
-            spatialAudioResult = SpatialAudioMath.calculateSpatialGain(
-                camPos, camFwd, camRight, crawlerEntity.position
-            )
-        }
-
-        // 1. Draw camera feed background with Terminal Vision Shader
-        backgroundRenderer.draw(
-            frame = frame,
-            intensity = maxIntensity,
-            filterEnabled = terminalFilterEnabled
-        )
-
-        // 2. 渲染已扫出的 10cm x 10cm 物理地面网格 (让玩家一眼看清地面是否平整咬合)
+        // 3. 渲染所有已钉入地面的 3D 标桩 (死死锚定在地砖上)
         if (trackingState == TrackingState.TRACKING) {
-            val allPlanes = currentSession.getAllTrackables(Plane::class.java)
-            tenCentimeterGridRenderer.drawFloorGrids(allPlanes, viewMatrix, projMatrix)
-
-            // 渲染严格水平的物理贴地光环
-            currentGroundTargetPos?.let { target ->
-                groundReticleRenderer.drawAtGroundPosition(
-                    gx = target.x,
-                    gy = target.y,
-                    gz = target.z,
-                    viewMatrix = viewMatrix,
-                    projMatrix = projMatrix
-                )
-            }
-        }
-
-        // 3. 渲染实体调试位置标点 (仅在开启 showDebugMarker 且实体激活时绘制紧凑红色微小线框，验证其实体走位)
-        if (trackingState == TrackingState.TRACKING && crawlerEntity.state != EntityState.IDLE && showDebugMarker) {
             val modelMatrix = FloatArray(16)
-            Matrix.setIdentityM(modelMatrix, 0)
-            val ePos = crawlerEntity.position
-            Matrix.translateM(modelMatrix, 0, ePos.x, ePos.y, ePos.z)
-            cubeRenderer.draw(modelMatrix, viewMatrix, projMatrix)
+            for (pin in groundPins) {
+                if (pin.trackingState == TrackingState.TRACKING) {
+                    pin.pose.toMatrix(modelMatrix, 0)
+                    groundPinRenderer.draw(modelMatrix, viewMatrix, projMatrix)
+                }
+            }
         }
 
-        // Update Spatial Audio Engine
-        if (trackingState == TrackingState.TRACKING && targetDistance >= 0f) {
-            audioEngine.updateSpatialGain(spatialAudioResult.leftVolume, spatialAudioResult.rightVolume)
-        } else {
-            audioEngine.updateSpatialGain(0f, 0f)
-        }
-
-        // 4. Update Diagnostics UI & Haptics on main thread
+        // 4. UI 数据更新
+        val pinCount = groundPins.size
         runOnUiThread {
-            // Trigger dynamic haptic feedback on UI thread via View pipeline
             if (trackingState == TrackingState.TRACKING) {
-                hapticDriver.update(maxIntensity, binding.root)
-            }
-
-            if (trackingState == TrackingState.TRACKING) {
-                val stagePrompt = when (crawlerEntity.state) {
-                    EntityState.IDLE -> "准心对准地面光环，轻触屏幕投放 [SCP 盲爪]"
-                    EntityState.PATROL -> "实体正在地面无声潜伏游走... 戴上耳机盲扫探测"
-                    EntityState.ALERT -> "【警戒】准心已压制目标！它已停止移动"
-                }
-                binding.tvStatus.text = stagePrompt
-
-                val stateStr = when (crawlerEntity.state) {
-                    EntityState.IDLE -> "未投放"
-                    EntityState.PATROL -> "巡游潜伏中 (v ≈ 0.28m/s)"
-                    EntityState.ALERT -> "已受电磁压制 (警觉定身)"
-                }
-                binding.tvEntityState.text = "实体状态: $stateStr"
+                binding.tvStatus.text = "空间基准正常：请将准星对准地面，点击「标定」"
             } else if (trackingState == TrackingState.PAUSED) {
-                binding.tvStatus.text = "正在校准空间基准... (请缓慢平移手机扫描环境)"
+                binding.tvStatus.text = "正在校准空间基准... (请缓慢平移手机扫描地砖)"
             } else {
-                binding.tvStatus.text = "追踪丢失 (尝试面向光线充足区域)"
+                binding.tvStatus.text = "追踪丢失 (请面向光线充足区域)"
             }
 
-            val floorStatus = if (currentFloorPos != null) "物理Anchor跟随(${ "%.2f".format(currentFloorPos.y)}m)" else "未检测到地面"
-            val eyeHeight = if (currentFloorPos != null) (camPos.y - currentFloorPos.y) else 0f
-            binding.tvInfo.text = "对地垂直净高: ${"%.2f".format(eyeHeight)}m | $floorStatus | 帧率: $currentFps FPS"
-
-            // 恢复实时三维物理坐标打印 (由 invViewMatrix 真实逆解提取，解决一直为 0 的问题)
-            binding.tvPose.text = String.format(
-                "坐标: X: %+.2fm | Y: %+.2fm | Z: %+.2fm",
-                camPos.x, camPos.y, camPos.z
-            )
-
-            if (crawlerEntity.state != EntityState.IDLE && targetDistance >= 0f) {
-                val alignPct = (targetCosTheta.coerceAtLeast(0f) * 100).toInt()
-                binding.tvDetectorHaptics.text = String.format(
-                    "探测: 距离 %.2fm | 锁定率 %d%% | 奇术通量 I = %.2f (k=%.0f)",
-                    targetDistance, alignPct, maxIntensity, currentK
-                )
-
-                val dirDesc = when {
-                    spatialAudioResult.azimuthDegrees > 30f -> "右偏 %.0f°".format(spatialAudioResult.azimuthDegrees)
-                    spatialAudioResult.azimuthDegrees < -30f -> "左偏 %.0f°".format(-spatialAudioResult.azimuthDegrees)
-                    else -> "正前方"
-                }
-
-                binding.tvSpatialAudio.text = String.format(
-                    "声源: [%s] | 方位: %s | 声道: L %.2f | R %.2f",
-                    audioEngine.currentTrack.displayName, dirDesc,
-                    spatialAudioResult.leftVolume, spatialAudioResult.rightVolume
-                )
-            } else {
-                binding.tvDetectorHaptics.text = "探测: 未投放异常实体 (点击绿网地面投放)"
-                binding.tvSpatialAudio.text = "声源: [盲爪爬行] | 待激活"
-            }
+            val distStr = if (currentCrosshairDistance > 0f) "${"%.2f".format(currentCrosshairDistance)}m" else "--m"
+            binding.tvPinInfo.text = "已标定地面点: $pinCount 个 | 准星当前距离: $distStr"
         }
     }
 
