@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
+import android.opengl.Matrix
 import android.os.Bundle
 import android.util.Log
 import android.view.View
@@ -45,6 +46,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     // 严谨存储所有打下的物理地面刚性标桩
     private val groundPins = CopyOnWriteArrayList<Anchor>()
 
+    // 地面高度全局补偿偏移 (米)：解决单目 ARCore 平面悬空或下陷问题
+    private var floorOffsetMeters: Float = 0.0f
+
     @Volatile
     private var pendingAddPin = false
 
@@ -74,6 +78,30 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             pendingAddPin = true
         }
 
+        // 高度微调：压低 5cm
+        binding.btnLower5cm.setOnClickListener {
+            floorOffsetMeters -= 0.05f
+            updateOffsetUi()
+        }
+
+        // 高度微调：压低 2cm
+        binding.btnLower2cm.setOnClickListener {
+            floorOffsetMeters -= 0.02f
+            updateOffsetUi()
+        }
+
+        // 高度微调：抬高 2cm
+        binding.btnRaise2cm.setOnClickListener {
+            floorOffsetMeters += 0.02f
+            updateOffsetUi()
+        }
+
+        // 重置微调
+        binding.btnResetOffset.setOnClickListener {
+            floorOffsetMeters = 0.0f
+            updateOffsetUi()
+        }
+
         binding.btnClearPins.setOnClickListener {
             for (pin in groundPins) {
                 pin.detach()
@@ -90,6 +118,13 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
 
         setupGlSurfaceView()
+    }
+
+    private fun updateOffsetUi() {
+        val cm = floorOffsetMeters * 100f
+        val text = if (cm >= 0f) "+%.1f cm".format(cm) else "%.1f cm".format(cm)
+        binding.tvOffsetInfo.text = "高度补偿偏移: $text (悬空则点 ⬇ 压低)"
+        hapticDriver.triggerOneShotTap(binding.root)
     }
 
     private fun setupGlSurfaceView() {
@@ -246,12 +281,16 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             }
         }
 
-        // 3. 渲染所有已钉入地面的 3D 标桩 (死死锚定在地砖上)
+        // 3. 渲染所有已钉入地面的 3D 标桩 (死死锚定在地砖上，且实时响应高度补偿)
         if (trackingState == TrackingState.TRACKING) {
             val modelMatrix = FloatArray(16)
             for (pin in groundPins) {
                 if (pin.trackingState == TrackingState.TRACKING) {
                     pin.pose.toMatrix(modelMatrix, 0)
+                    // 应用用户手动校准的高度偏移量 (沿世界重力轴上下微调)
+                    if (floorOffsetMeters != 0.0f) {
+                        Matrix.translateM(modelMatrix, 0, 0f, floorOffsetMeters, 0f)
+                    }
                     groundPinRenderer.draw(modelMatrix, viewMatrix, projMatrix)
                 }
             }

@@ -18,7 +18,7 @@
         android:src="@drawable/ic_clean_crosshair"
         android:alpha="0.9" />
 
-    <!-- Terminal Top HUD (纯净极简) -->
+    <!-- Terminal Top HUD -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -31,7 +31,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="[ 地面点位标定与漂移检验系统 ]"
+            android:text="[ 地面点位标定与物理高度调节 ]"
             android:textColor="@color/terminal_green"
             android:textSize="13sp"
             android:textStyle="bold" />
@@ -53,39 +53,115 @@
             android:text="已标定地面点: 0 个 | 准星距离: --m"
             android:textColor="@color/terminal_green"
             android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/tvOffsetInfo"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="高度补偿偏移: 0.00 cm (悬空则点 ⬇ 压低)"
+            android:textColor="@color/white"
+            android:textSize="11sp" />
     </LinearLayout>
 
-    <!-- Bottom Controls (两个纯净大按钮) -->
+    <!-- Bottom Controls -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:layout_margin="16dp"
         android:background="@color/terminal_dark"
-        android:orientation="horizontal"
+        android:orientation="vertical"
         android:padding="12dp">
 
-        <Button
-            android:id="@+id/btnPlacePin"
-            android:layout_width="0dp"
-            android:layout_height="44dp"
-            android:layout_marginEnd="8dp"
-            android:layout_weight="2"
-            android:backgroundTint="@color/terminal_green"
-            android:text="📍 标定当前地面点"
-            android:textColor="@color/black"
-            android:textSize="13sp"
-            android:textStyle="bold" />
+        <!-- Row 1: 高度微调条 (解决单目 ARCore 平面悬空或陷地) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
-        <Button
-            android:id="@+id/btnClearPins"
-            android:layout_width="0dp"
-            android:layout_height="44dp"
-            android:layout_weight="1"
-            android:backgroundTint="@color/terminal_dark"
-            android:text="清空点位"
-            android:textColor="@color/terminal_green"
-            android:textSize="12sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="高度微调: "
+                android:textColor="@color/white"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnLower5cm"
+                android:layout_width="0dp"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:layout_weight="1"
+                android:backgroundTint="@color/terminal_border"
+                android:text="⬇ 压低5cm"
+                android:textColor="@color/terminal_green"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnLower2cm"
+                android:layout_width="0dp"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:layout_weight="1"
+                android:backgroundTint="@color/terminal_border"
+                android:text="⬇ 压低2cm"
+                android:textColor="@color/terminal_green"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnRaise2cm"
+                android:layout_width="0dp"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:layout_weight="1"
+                android:backgroundTint="@color/terminal_border"
+                android:text="⬆ 抬高2cm"
+                android:textColor="@color/terminal_green"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnResetOffset"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="@color/terminal_dark"
+                android:text="重置"
+                android:textColor="@color/white"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <!-- Row 2: 标定与清空 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnPlacePin"
+                android:layout_width="0dp"
+                android:layout_height="44dp"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="2"
+                android:backgroundTint="@color/terminal_green"
+                android:text="📍 标定当前地面点"
+                android:textColor="@color/black"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnClearPins"
+                android:layout_width="0dp"
+                android:layout_height="44dp"
+                android:layout_weight="1"
+                android:backgroundTint="@color/terminal_dark"
+                android:text="清空点位"
+                android:textColor="@color/terminal_green"
+                android:textSize="12sp" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- Permission prompt fallback -->
